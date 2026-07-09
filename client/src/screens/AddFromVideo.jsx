@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
 
@@ -33,6 +33,19 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
   const [draft, setDraft]       = useState(null);
   const fileRef                 = useRef(null);
   const stopStatus              = useRef(null);
+
+  // User-defined filter list (fetched once)
+  const [userFilters, setUserFilters]     = useState([]);
+  const [filtersReady, setFiltersReady]   = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.filters.list()
+      .then((data) => { if (!cancelled) setUserFilters(data || []); })
+      .catch(() => { if (!cancelled) setUserFilters([]); })
+      .finally(() => { if (!cancelled) setFiltersReady(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   function startLoading() {
     setState('loading');
@@ -115,7 +128,7 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
     setErrorMsg('');
   }
 
-  async function saveDraft() {
+  async function saveDraft(checkedFilters) {
     if (!draft) return;
     if (isOffline) { showError("You're offline. Can't save right now."); return; }
     try {
@@ -131,6 +144,7 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
         steps:       (draft.steps || []).filter((s) => s?.trim()),
         tags:        draft.tags || [],
         source_url:  draft._sourceUrl || null,
+        filters:     [...checkedFilters],
       };
       const created = await api.create(payload);
       onSaved(created.id);
@@ -262,6 +276,7 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
       {state === 'draft' && draft && (
         <DraftCard
           draft={draft}
+          userFilters={filtersReady ? userFilters : []}
           onUpdateField={updateDraftField}
           onUpdateIng={updateDraftIng}
           onUpdateStep={updateDraftStep}
@@ -273,7 +288,22 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
   );
 }
 
-function DraftCard({ draft, onUpdateField, onUpdateIng, onUpdateStep, onSave, onDiscard }) {
+function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateStep, onSave, onDiscard }) {
+  // Pre-check filters that the AI suggested (draft.filters is string[])
+  const aiSuggested = new Set(Array.isArray(draft.filters) ? draft.filters : []);
+  const [checkedFilters, setCheckedFilters] = useState(
+    () => new Set([...aiSuggested])
+  );
+
+  function toggleFilter(label) {
+    setCheckedFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }
+
   return (
     <div className="draft-card">
       <div className="draft-hero">
@@ -335,6 +365,37 @@ function DraftCard({ draft, onUpdateField, onUpdateIng, onUpdateStep, onSave, on
             />
           </span>
         </div>
+
+        {/* Filters checklist */}
+        {userFilters.length > 0 && (
+          <div className="draft-filters-section">
+            <div className="draft-filters-label">
+              Filters
+              {aiSuggested.size > 0 && (
+                <span className="draft-filters-ai-hint"> · AI pre-selected</span>
+              )}
+            </div>
+            <div className="rf-filter-checklist" role="group" aria-label="Filters">
+              {userFilters.map((f) => {
+                const checked = checkedFilters.has(f.label);
+                const wasAi   = aiSuggested.has(f.label);
+                return (
+                  <label key={f.id} className="rf-filter-chip">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleFilter(f.label)}
+                      aria-label={f.label}
+                    />
+                    <span className={`rf-filter-chip-label${checked ? ' checked' : ''}${wasAi ? ' ai-suggested' : ''}`}>
+                      {f.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="draft-columns">
           {/* Ingredients — always visible */}
@@ -402,7 +463,7 @@ function DraftCard({ draft, onUpdateField, onUpdateIng, onUpdateStep, onSave, on
         </div>
 
         <div className="draft-actions">
-          <button className="btn btn-primary" onClick={onSave}>Save to library</button>
+          <button className="btn btn-primary" onClick={() => onSave(checkedFilters)}>Save to library</button>
           <button className="btn btn-secondary" onClick={onDiscard}>Discard</button>
         </div>
       </div>

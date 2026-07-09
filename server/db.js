@@ -19,6 +19,8 @@ db.exec(`
     description    TEXT NOT NULL DEFAULT '',
     cuisine        TEXT NOT NULL DEFAULT '',
     category       TEXT NOT NULL DEFAULT '',
+    protein        TEXT NOT NULL DEFAULT '[]', -- JSON string[] of main proteins
+    carb           TEXT NOT NULL DEFAULT '[]', -- JSON string[] of main carbs
     minutes        INTEGER,
     servings       INTEGER,
     rating         REAL,
@@ -27,6 +29,7 @@ db.exec(`
     ingredients    TEXT NOT NULL DEFAULT '[]',  -- JSON [{name,qty}]
     steps          TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
     tags           TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
+    filters        TEXT NOT NULL DEFAULT '[]',  -- JSON string[] of assigned user filter labels
     source_url     TEXT,
     source_caption TEXT,
     created_at     TEXT NOT NULL,
@@ -48,6 +51,8 @@ const recipeMigrations = [
   { col: 'description',    ddl: 'TEXT NOT NULL DEFAULT ""' },
   { col: 'cuisine',        ddl: 'TEXT NOT NULL DEFAULT ""' },
   { col: 'category',       ddl: 'TEXT NOT NULL DEFAULT ""' },
+  { col: 'protein',        ddl: "TEXT NOT NULL DEFAULT '[]'" },
+  { col: 'carb',           ddl: "TEXT NOT NULL DEFAULT '[]'" },
   { col: 'minutes',        ddl: 'INTEGER' },
   { col: 'rating',         ddl: 'REAL' },
   { col: 'favorite',       ddl: 'INTEGER NOT NULL DEFAULT 0' },
@@ -57,6 +62,7 @@ const recipeMigrations = [
   // SQLite supports ALTER ADD but not ALTER COLUMN, so if servings already
   // exists as TEXT we leave it (values still read as integers via JS coercion).
   { col: 'servings',       ddl: 'INTEGER' },
+  { col: 'filters',        ddl: "TEXT NOT NULL DEFAULT '[]'" },
 ];
 
 for (const { col, ddl } of recipeMigrations) {
@@ -82,6 +88,19 @@ if (existingCols.includes('notes')) {
   // SQLite can't DROP COLUMN before version 3.35.0; leave the column in place
   // but stop reading/writing it. The UPDATE above preserves any existing notes.
 }
+
+// ---------------------------------------------------------------------------
+// User-defined filters
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS filters (
+    id         TEXT PRIMARY KEY,
+    label      TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+`);
 
 // ---------------------------------------------------------------------------
 // Meal plan

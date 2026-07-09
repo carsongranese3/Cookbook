@@ -19,6 +19,116 @@
 import { stat }              from 'node:fs/promises';
 import { ExtractError, CODES } from './errors.js';
 
+// ---------------------------------------------------------------------------
+// assignFilters — lightweight text-only Gemini call
+// ---------------------------------------------------------------------------
+
+/**
+ * Given a recipe object and a list of user-defined filter labels, ask Gemini
+ * which of those labels clearly apply to the recipe.
+ *
+ * @param {{ title?: string, description?: string, ingredients?: {name:string,qty:string}[], steps?: string[] }} recipe
+ * @param {string[]} filterLabels  The user's flat filter label list.
+ * @returns {Promise<string[]>}  Subset of filterLabels that apply; [] on any parse error.
+ */
+export async function assignFilters(recipe, filterLabels) {
+  if (!filterLabels || filterLabels.length === 0) return [];
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new ExtractError(
+      CODES.CONFIG,
+      'GEMINI_API_KEY environment variable is not set',
+      'The server is not configured for AI extraction. Set GEMINI_API_KEY in server/.env.',
+    );
+  }
+
+  const modelId = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+
+  // Build a compact recipe summary for the prompt.
+  const title = recipe.title ?? '';
+  const description = recipe.description ?? '';
+  const ingredientLines = Array.isArray(recipe.ingredients)
+    ? recipe.ingredients.map((i) => `${i.qty ? i.qty + ' ' : ''}${i.name}`).join(', ')
+    : '';
+  const stepLines = Array.isArray(recipe.steps) ? recipe.steps.join(' ') : '';
+  const recipeSummary = [
+    title && `Title: ${title}`,
+    description && `Description: ${description}`,
+    ingredientLines && `Ingredients: ${ingredientLines}`,
+    stepLines && `Steps: ${stepLines}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const prompt =
+    `You tag a recipe with filters from a FIXED list.\n\n` +
+    `Recipe:\n${recipeSummary}\n\n` +
+    `Available filters: ${JSON.stringify(filterLabels)}\n\n` +
+    `Return ONLY a JSON array (no code fences, no prose, no explanation) of the filters ` +
+    `from the list that clearly apply to this recipe. Use ONLY exact strings from the list; ` +
+    `do not invent, rename, or add new ones. Return [] if none apply.`;
+
+  // Lazy-import Gemini SDK (same pattern as extractWithGemini).
+  let GoogleGenerativeAI;
+  try {
+    const sdk = await import('@google/generative-ai');
+    GoogleGenerativeAI = sdk.GoogleGenerativeAI;
+  } catch (err) {
+    throw new ExtractError(
+      CODES.CONFIG,
+      `Failed to import @google/generative-ai: ${err.message}`,
+      'The AI library is not installed on the server. Run npm install in server/.',
+    );
+  }
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: modelId });
+
+  let rawText;
+  try {
+    const result = await withTimeout(
+      model.generateContent(prompt),
+      TIMEOUT_MS,
+    );
+    rawText = result.response.text();
+  } catch (err) {
+    if (err instanceof ExtractError) throw err;
+    // Best-effort: network/timeout failures return [] rather than crashing.
+    console.warn('[assignFilters] Gemini call failed:', err.message);
+    return [];
+  }
+
+  // Defensive parse: strip fences, find [...], JSON.parse, then filter to
+  // only canonical labels (case-insensitive check, return the canonical form).
+  try {
+    let cleaned = rawText
+      .replace(/^```(?:json)?\s*/im, '')
+      .replace(/\s*```\s*$/im, '')
+      .trim();
+
+    // Slice from first [ to last ] to handle any surrounding prose.
+    const start = cleaned.indexOf('[');
+    const end   = cleaned.lastIndexOf(']');
+    if (start === -1 || end === -1 || end <= start) return [];
+    cleaned = cleaned.slice(start, end + 1);
+
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed)) return [];
+
+    // Build a lowercase lookup map from the canonical labels list.
+    const labelMap = new Map(filterLabels.map((l) => [l.toLowerCase(), l]));
+
+    return parsed
+      .filter((item) => typeof item === 'string')
+      .map((item) => labelMap.get(item.toLowerCase().trim()))
+      .filter(Boolean);
+  } catch {
+    console.warn('[assignFilters] Could not parse Gemini response; returning []');
+    return [];
+  }
+}
+
 // We import the Gemini SDK lazily inside the function so that missing deps
 // surface as a clear CONFIG error rather than a module-load crash.
 
@@ -53,6 +163,8 @@ Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no
   "servings": 0,
   "cuisine": "string — e.g. Italian, Mexican, American",
   "category": "string — one of Dinner, Breakfast, Dessert, or another category",
+  "protein": ["string — main protein(s); usually one, but list multiple for e.g. surf & turf"],
+  "carb": ["string — main carb(s); usually one, list multiple if the dish genuinely has more"],
   "hero_seconds": 0,
   "ingredients": [{ "name": "string", "qty": "string" }],
   "steps": ["string"]
@@ -61,12 +173,13 @@ Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no
 Rules you must follow:
 1. CONVERT ALL MEASUREMENTS TO IMPERIAL. Weights → oz or lb. Volumes → cups, tbsp, tsp, or fl oz. Oven temperatures → °F. Lengths → inches. For dry goods given in grams, use standard culinary volume equivalents (e.g. 120 g flour ≈ 1 cup; 15 g butter ≈ 1 tbsp). For liquids given in ml, convert directly (240 ml ≈ 1 cup; 15 ml ≈ 1 tbsp; 5 ml ≈ 1 tsp). Amounts should be estimates the user can correct.
 2. The caption/description and author comments above OFTEN contain the full written recipe. Treat them as a PRIMARY source: if ingredients, quantities, or steps are written there, use them (reconciled with what the video shows) rather than guessing. Prefer written amounts over estimating from the video.
-3. Do NOT invent ingredients. Only include what is shown, said, or written in the caption. If something is unclear, omit it rather than guess. If no recipe can be identified, return {"title":"","description":"","minutes":0,"servings":0,"cuisine":"","category":"","hero_seconds":0,"ingredients":[],"steps":[]}.
+3. Do NOT invent ingredients. Only include what is shown, said, or written in the caption. If something is unclear, omit it rather than guess. If no recipe can be identified, return {"title":"","description":"","minutes":0,"servings":0,"cuisine":"","category":"","protein":[],"carb":[],"hero_seconds":0,"ingredients":[],"steps":[]}.
 4. Target 5–9 ingredients and 4–7 concise imperative steps (e.g. "Mix flour and butter until crumbly.").
 5. "qty" is a display string like "2 cups", "1 tbsp", "1 lb", "350°F", or "" if unknown.
-6. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
-7. "hero_seconds": the time in SECONDS (a number; decimals allowed) of the single best "hero" frame in the video — ideally the finished, plated dish looking its most appetizing, or the most visually appealing moment. This frame becomes the recipe's photo. Use 0 only if truly unsure.
-8. Return nothing outside the JSON object.`;
+6. "protein" and "carb" are ARRAYS of the dish's MAIN protein(s) and MAIN carb(s) — the defining ingredients, not incidental ones (an omelette's protein is ["Egg"]; banana bread's protein is [] even though it contains eggs). USUALLY ONE each, but include multiple when the dish genuinely centers on more than one (surf & turf → ["Beef","Shrimp"]; a bowl served over both rice and noodles → ["Rice","Noodles"]). Use short canonical words (Chicken, Beef, Pork, Turkey, Lamb, Shrimp, Fish, Tofu, Egg, Beans; Rice, Noodles, Pasta, Bread, Potato, Quinoa, Couscous). Empty array [] if the dish has no main protein or no main carb.
+7. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
+8. "hero_seconds": the time in SECONDS (a number; decimals allowed) of the single best "hero" frame in the video — ideally the finished, plated dish looking its most appetizing, or the most visually appealing moment. This frame becomes the recipe's photo. Use 0 only if truly unsure.
+9. Return nothing outside the JSON object.`;
 }
 
 const RETRY_PROMPT =
@@ -121,6 +234,11 @@ function coerceDraft(raw) {
     const n = parseFloat(String(v ?? ''));
     return isFinite(n) && n >= 0 ? n : fallback;
   };
+  // Main protein(s)/carb(s): accept an array or a single string.
+  const strArr = (v) =>
+    Array.isArray(v)
+      ? v.map((x) => str(x)).filter(Boolean)
+      : (typeof v === 'string' && v.trim() ? [v.trim()] : []);
 
   // Normalize ingredients: each item must be { name: string, qty: string }.
   const rawIngredients = Array.isArray(obj.ingredients) ? obj.ingredients : [];
@@ -153,6 +271,8 @@ function coerceDraft(raw) {
     servings:    int(obj.servings),
     cuisine:     str(obj.cuisine),
     category:    str(obj.category),
+    protein:     strArr(obj.protein),
+    carb:        strArr(obj.carb),
     heroSeconds: num(obj.hero_seconds),
     ingredients,
     steps,

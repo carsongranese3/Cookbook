@@ -33,6 +33,7 @@ import { downloadVideo }        from './ytdlp.js';
 import { extractWithGemini }    from './gemini.js';
 import { pickHeroFrameDataUri } from './frame.js';
 export { ExtractError, CODES } from './errors.js';
+export { assignFilters }        from './gemini.js';
 
 // ---------------------------------------------------------------------------
 // JSDoc type (informational — this is plain JS, no TypeScript compiler)

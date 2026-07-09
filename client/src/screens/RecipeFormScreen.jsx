@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { api } from '../api.js';
 
 export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded }) {
   const isEdit = Boolean(recipe);
@@ -31,8 +32,25 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
   const [tags, setTags]         = useState(recipe?.tags || []);
   const [tagInput, setTagInput] = useState('');
 
+  // Filters — user-defined list from server; checked = assigned to this recipe
+  const [userFilters, setUserFilters]   = useState([]);
+  const [filtersLoading, setFiltersLoading] = useState(true);
+  const [checkedFilters, setCheckedFilters] = useState(
+    () => new Set(Array.isArray(recipe?.filters) ? recipe.filters : [])
+  );
+
   const [saving, setSaving]   = useState(false);
   const [error, setError]     = useState('');
+
+  // Fetch user-defined filter list
+  useEffect(() => {
+    let cancelled = false;
+    api.filters.list()
+      .then((data) => { if (!cancelled) setUserFilters(data || []); })
+      .catch(() => { if (!cancelled) setUserFilters([]); })
+      .finally(() => { if (!cancelled) setFiltersLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Ingredient helpers ──────────────────────────────────────────────────
   function updateIng(i, field, val) {
@@ -90,6 +108,16 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
     }
   }
 
+  // ── Filter toggle ───────────────────────────────────────────────────────
+  function toggleFilter(label) {
+    setCheckedFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }
+
   // ── Submit ──────────────────────────────────────────────────────────────
   async function handleSubmit(e) {
     e.preventDefault();
@@ -114,6 +142,7 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
         ingredients:  ingredients.filter((i) => i.name.trim()),
         steps:        steps.filter((s) => s.trim()),
         tags,
+        filters:      [...checkedFilters],
       };
       await onSave(data);
     } catch (err) {
@@ -209,6 +238,40 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
               placeholder={tags.length === 0 ? 'e.g. Vegetarian, Quick, Spicy' : ''}
             />
           </div>
+        </div>
+
+        {/* Filters checklist */}
+        <div className="form-group">
+          <div className="form-label">
+            Filters
+            <span className="form-hint"> (select all that apply)</span>
+          </div>
+          {filtersLoading ? (
+            <p className="form-hint" style={{ margin: 0 }}>Loading filters…</p>
+          ) : userFilters.length === 0 ? (
+            <p className="form-hint" style={{ margin: 0 }}>
+              No filters defined yet. Add them from the Library screen.
+            </p>
+          ) : (
+            <div className="rf-filter-checklist" role="group" aria-label="Filters">
+              {userFilters.map((f) => {
+                const checked = checkedFilters.has(f.label);
+                return (
+                  <label key={f.id} className="rf-filter-chip">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleFilter(f.label)}
+                      aria-label={f.label}
+                    />
+                    <span className={`rf-filter-chip-label${checked ? ' checked' : ''}`}>
+                      {f.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Ingredients */}

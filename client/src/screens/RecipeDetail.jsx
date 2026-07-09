@@ -16,11 +16,15 @@ export default function RecipeDetail({
   onStartCooking,
   weekDays,
   onAddToPlan,
+  onRecipeChange,
 }) {
   const [showDayPicker, setShowDayPicker] = useState(false);
   const [showConfirm, setShowConfirm]     = useState(false);
   const [addingToList, setAddingToList]   = useState(false);
   const [listMsg, setListMsg]             = useState('');
+  const [assigningFilters, setAssigningFilters] = useState(false);
+  const [assignMsg, setAssignMsg]               = useState('');
+  const [localFilters, setLocalFilters]         = useState(null); // optimistic override
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -54,6 +58,34 @@ export default function RecipeDetail({
     }
   }
 
+  async function handleAssignFilters() {
+    if (!recipe?.id) return;
+    setAssigningFilters(true);
+    setAssignMsg('');
+    try {
+      const updated = await api.assignFilters(recipe.id);
+      // updated is the refreshed recipe object
+      const assigned = Array.isArray(updated?.filters) ? updated.filters : [];
+      setLocalFilters(assigned);
+      setAssignMsg(
+        assigned.length > 0
+          ? `Assigned: ${assigned.join(', ')}`
+          : 'No filters matched this recipe.'
+      );
+      if (onRecipeChange) onRecipeChange(updated);
+      setTimeout(() => setAssignMsg(''), 5000);
+    } catch (err) {
+      if (err.status === 503) {
+        setAssignMsg('AI not configured on the server.');
+      } else {
+        setAssignMsg(err.message || 'Could not assign filters.');
+      }
+      setTimeout(() => setAssignMsg(''), 5000);
+    } finally {
+      setAssigningFilters(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="page-pad">
@@ -82,6 +114,9 @@ export default function RecipeDetail({
     id, title, description, cuisine, category, minutes, servings, rating,
     favorite, image, ingredients, steps,
   } = recipe;
+
+  // Show locally-updated filters (after assign-filters), else the recipe's own array
+  const displayFilters = localFilters ?? (Array.isArray(recipe.filters) ? recipe.filters : []);
 
   const ratingDisplay = rating != null ? `★ ${rating}` : 'New';
   const hasSteps      = steps && steps.length > 0;
@@ -161,6 +196,13 @@ export default function RecipeDetail({
           <div className="detail-info">
             {eyebrow && <div className="detail-eyebrow">{eyebrow}</div>}
             <h1 className="detail-title">{title}</h1>
+            {displayFilters.length > 0 && (
+              <div className="detail-assigned-filters">
+                {displayFilters.map((label) => (
+                  <span key={label} className="detail-filter-chip">{label}</span>
+                ))}
+              </div>
+            )}
             {description && <p className="detail-desc">{description}</p>}
             <div className="detail-stats">
               <div className="stat-item">
@@ -219,6 +261,22 @@ export default function RecipeDetail({
               </svg>
               {addingToList ? 'Adding…' : 'Add to list'}
             </button>
+            {recipe.source_url && (
+              <a
+                className="btn btn-secondary"
+                href={recipe.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open the original video"
+                style={{ textDecoration: 'none' }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" aria-hidden="true">
+                  <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+                  <path d="M15 3h6v6"/><path d="M10 14L21 3"/>
+                </svg>
+                Open original
+              </a>
+            )}
             {weekDays && (
               <button
                 className="btn btn-secondary"
@@ -238,12 +296,38 @@ export default function RecipeDetail({
               <HeartIcon filled={favorite} size={15} />
               {favLabel}
             </button>
+            <button
+              className="btn btn-secondary detail-assign-btn"
+              onClick={handleAssignFilters}
+              disabled={assigningFilters}
+              title="Let the AI assign filters based on this recipe's content"
+            >
+              {assigningFilters ? (
+                <>
+                  <span className="spinner spinner-sm" role="status" aria-label="Assigning" />
+                  Assigning…
+                </>
+              ) : (
+                <>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
+                  </svg>
+                  Assign filters (AI)
+                </>
+              )}
+            </button>
           </div>
         </div>
 
         {listMsg && (
           <p style={{ margin: '10px 0 0', font: '400 12px Onest', color: 'var(--secondary)' }}>
             {listMsg}
+          </p>
+        )}
+
+        {assignMsg && (
+          <p style={{ margin: '10px 0 0', font: '400 12px Onest', color: 'var(--secondary)' }}>
+            {assignMsg}
           </p>
         )}
 
@@ -382,6 +466,59 @@ export default function RecipeDetail({
               </svg>
             </button>
           </div>
+
+          {recipe.source_url && (
+            <a
+              className="btn btn-secondary"
+              href={recipe.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ marginTop: 12, width: '100%', textDecoration: 'none' }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" aria-hidden="true">
+                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+                <path d="M15 3h6v6"/><path d="M10 14L21 3"/>
+              </svg>
+              Open original video
+            </a>
+          )}
+
+          {/* Assign filters (AI) — phone */}
+          <button
+            className="btn btn-secondary detail-assign-btn"
+            onClick={handleAssignFilters}
+            disabled={assigningFilters}
+            style={{ marginTop: 12, width: '100%' }}
+          >
+            {assigningFilters ? (
+              <>
+                <span className="spinner spinner-sm" role="status" aria-label="Assigning" />
+                Assigning…
+              </>
+            ) : (
+              <>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
+                </svg>
+                Assign filters (AI)
+              </>
+            )}
+          </button>
+
+          {/* Assigned filter chips — phone */}
+          {displayFilters.length > 0 && (
+            <div className="detail-assigned-filters" style={{ marginTop: 8 }}>
+              {displayFilters.map((label) => (
+                <span key={label} className="detail-filter-chip">{label}</span>
+              ))}
+            </div>
+          )}
+
+          {assignMsg && (
+            <p style={{ margin: '8px 0 0', font: '400 12px Onest', color: 'var(--secondary)' }}>
+              {assignMsg}
+            </p>
+          )}
 
           <div className="detail-mgmt-row" style={{ marginTop: 12 }}>
             <button

@@ -51,6 +51,8 @@ function rowToRecipe(row) {
     description: row.description ?? '',
     cuisine: row.cuisine ?? '',
     category: row.category ?? '',
+    protein: safeParse(row.protein, []),
+    carb: safeParse(row.carb, []),
     minutes: row.minutes != null ? Number(row.minutes) : null,
     servings: row.servings != null ? Number(row.servings) : null,
     rating: row.rating != null ? Number(row.rating) : null,
@@ -59,6 +61,7 @@ function rowToRecipe(row) {
     ingredients: safeParse(row.ingredients, []),
     steps: safeParse(row.steps, []),
     tags: safeParse(row.tags, []),
+    filters: safeParse(row.filters, []),
     source_url: row.source_url ?? null,
     source_caption: row.source_caption ?? null,
     created_at: row.created_at,
@@ -96,6 +99,12 @@ function normalizeBody(body = {}) {
       ? v.map((s) => String(s).trim()).filter(Boolean)
       : [];
 
+  // Like toStringArray, but also accepts a single string ("Chicken" -> ["Chicken"]).
+  const toStrArr = (v) =>
+    Array.isArray(v)
+      ? v.map((s) => String(s).trim()).filter(Boolean)
+      : (typeof v === 'string' && v.trim() ? [v.trim()] : []);
+
   const toInt = (v) => {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : null;
@@ -112,6 +121,8 @@ function normalizeBody(body = {}) {
     description: String(body.description ?? '').trim(),
     cuisine: String(body.cuisine ?? '').trim(),
     category: String(body.category ?? '').trim(),
+    protein: toStrArr(body.protein),
+    carb: toStrArr(body.carb),
     minutes: toInt(body.minutes),
     servings: toInt(body.servings),
     rating: toFloat(body.rating),
@@ -120,6 +131,7 @@ function normalizeBody(body = {}) {
     ingredients: toIngredients(body.ingredients),
     steps: toStringArray(body.steps),
     tags: toStringArray(body.tags),
+    filters: toStringArray(body.filters),
     source_url: body.source_url ? String(body.source_url).trim() : null,
     source_caption: body.source_caption
       ? String(body.source_caption).trim()
@@ -182,12 +194,12 @@ app.post('/api/recipes', (req, res) => {
   const id = randomUUID();
   db.prepare(
     `INSERT INTO recipes
-       (id, title, description, cuisine, category, minutes, servings, rating,
-        favorite, image, ingredients, steps, tags, source_url, source_caption,
+       (id, title, description, cuisine, category, protein, carb, minutes, servings, rating,
+        favorite, image, ingredients, steps, tags, filters, source_url, source_caption,
         created_at, updated_at)
      VALUES
-       (@id, @title, @description, @cuisine, @category, @minutes, @servings,
-        @rating, @favorite, @image, @ingredients, @steps, @tags,
+       (@id, @title, @description, @cuisine, @category, @protein, @carb, @minutes, @servings,
+        @rating, @favorite, @image, @ingredients, @steps, @tags, @filters,
         @source_url, @source_caption, @created_at, @updated_at)`
   ).run({
     id,
@@ -195,6 +207,9 @@ app.post('/api/recipes', (req, res) => {
     ingredients: JSON.stringify(data.ingredients),
     steps: JSON.stringify(data.steps),
     tags: JSON.stringify(data.tags),
+    filters: JSON.stringify(data.filters),
+    protein: JSON.stringify(data.protein),
+    carb: JSON.stringify(data.carb),
     created_at: now,
     updated_at: now,
   });
@@ -220,6 +235,8 @@ app.put('/api/recipes/:id', (req, res) => {
        description = @description,
        cuisine = @cuisine,
        category = @category,
+       protein = @protein,
+       carb = @carb,
        minutes = @minutes,
        servings = @servings,
        rating = @rating,
@@ -228,6 +245,7 @@ app.put('/api/recipes/:id', (req, res) => {
        ingredients = @ingredients,
        steps = @steps,
        tags = @tags,
+       filters = @filters,
        source_url = @source_url,
        source_caption = @source_caption,
        updated_at = @updated_at
@@ -238,6 +256,9 @@ app.put('/api/recipes/:id', (req, res) => {
     ingredients: JSON.stringify(data.ingredients),
     steps: JSON.stringify(data.steps),
     tags: JSON.stringify(data.tags),
+    filters: JSON.stringify(data.filters),
+    protein: JSON.stringify(data.protein),
+    carb: JSON.stringify(data.carb),
     updated_at: now,
   });
   const row = db
@@ -284,6 +305,248 @@ app.patch('/api/recipes/:id/favorite', (req, res) => {
     .prepare('SELECT * FROM recipes WHERE id = ?')
     .get(req.params.id);
   res.json(rowToRecipe(updated));
+});
+
+// ===========================================================================
+// Filters CRUD
+// ===========================================================================
+
+/** Turn a DB row into a filter API object. */
+function rowToFilter(row) {
+  return {
+    id:         row.id,
+    label:      row.label,
+    position:   row.position,
+    created_at: row.created_at,
+  };
+}
+
+// GET /api/filters — all filters ordered by position, then created_at.
+app.get('/api/filters', (_req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM filters ORDER BY position ASC, created_at ASC')
+    .all();
+  res.json(rows.map(rowToFilter));
+});
+
+// POST /api/filters — create a filter.
+app.post('/api/filters', (req, res) => {
+  const label = String(req.body?.label ?? '').trim();
+  if (!label) return res.status(400).json({ error: 'label is required' });
+
+  // Case-insensitive duplicate check — return existing rather than inserting.
+  const existing = db
+    .prepare('SELECT * FROM filters WHERE lower(label) = lower(?)')
+    .get(label);
+  if (existing) return res.json(rowToFilter(existing));
+
+  // position = max existing position + 1 (or 0 if table is empty).
+  const maxPos = db
+    .prepare('SELECT COALESCE(MAX(position), -1) as mp FROM filters')
+    .get();
+  const position = (maxPos?.mp ?? -1) + 1;
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO filters (id, label, position, created_at) VALUES (?, ?, ?, ?)'
+  ).run(id, label, position, now);
+
+  const row = db.prepare('SELECT * FROM filters WHERE id = ?').get(id);
+  res.status(201).json(rowToFilter(row));
+});
+
+// PATCH /api/filters/:id — rename a filter; cascades into recipe.filters arrays.
+app.patch('/api/filters/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM filters WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Filter not found' });
+
+  const newLabel = String(req.body?.label ?? '').trim();
+  if (!newLabel) return res.status(400).json({ error: 'label is required' });
+
+  // If label unchanged (case-insensitive) just return the current filter.
+  if (newLabel.toLowerCase() === row.label.toLowerCase()) {
+    // Still apply the exact casing from the request if it differs.
+    db.prepare('UPDATE filters SET label = ? WHERE id = ?').run(newLabel, row.id);
+    const updated = db.prepare('SELECT * FROM filters WHERE id = ?').get(row.id);
+    return res.json(rowToFilter(updated));
+  }
+
+  const oldLabel = row.label;
+
+  // Cascade: update every recipe whose filters array contains the old label.
+  const recipesToUpdate = db
+    .prepare("SELECT id, filters FROM recipes WHERE filters != '[]'")
+    .all();
+
+  const updateRecipeFilters = db.prepare(
+    'UPDATE recipes SET filters = ?, updated_at = ? WHERE id = ?'
+  );
+  const now = new Date().toISOString();
+
+  const cascade = db.transaction(() => {
+    db.prepare('UPDATE filters SET label = ? WHERE id = ?').run(newLabel, row.id);
+    for (const r of recipesToUpdate) {
+      const arr = safeParse(r.filters, []);
+      const oldLower = oldLabel.toLowerCase();
+      if (!arr.some((l) => l.toLowerCase() === oldLower)) continue;
+      const updated = arr.map((l) =>
+        l.toLowerCase() === oldLower ? newLabel : l
+      );
+      updateRecipeFilters.run(JSON.stringify(updated), now, r.id);
+    }
+  });
+  cascade();
+
+  const updated = db.prepare('SELECT * FROM filters WHERE id = ?').get(row.id);
+  res.json(rowToFilter(updated));
+});
+
+// DELETE /api/filters/:id — delete a filter; cascades removal from recipe.filters arrays.
+app.delete('/api/filters/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM filters WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Filter not found' });
+
+  const label = row.label;
+
+  const recipesToUpdate = db
+    .prepare("SELECT id, filters FROM recipes WHERE filters != '[]'")
+    .all();
+
+  const updateRecipeFilters = db.prepare(
+    'UPDATE recipes SET filters = ?, updated_at = ? WHERE id = ?'
+  );
+  const now = new Date().toISOString();
+  const labelLower = label.toLowerCase();
+
+  const cascade = db.transaction(() => {
+    db.prepare('DELETE FROM filters WHERE id = ?').run(row.id);
+    for (const r of recipesToUpdate) {
+      const arr = safeParse(r.filters, []);
+      if (!arr.some((l) => l.toLowerCase() === labelLower)) continue;
+      const filtered = arr.filter((l) => l.toLowerCase() !== labelLower);
+      updateRecipeFilters.run(JSON.stringify(filtered), now, r.id);
+    }
+  });
+  cascade();
+
+  res.status(204).end();
+});
+
+// PUT /api/filters/order — reorder filters by providing an ordered array of ids.
+// NOTE: this route must be registered before /api/filters/:id so Express matches
+// the literal "order" path segment, not the :id param.
+app.put('/api/filters/order', (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids)) {
+    return res.status(400).json({ error: 'ids must be an array' });
+  }
+
+  const update = db.prepare('UPDATE filters SET position = ? WHERE id = ?');
+  const reorder = db.transaction(() => {
+    for (let i = 0; i < ids.length; i++) {
+      update.run(i, ids[i]);
+    }
+  });
+  reorder();
+
+  const rows = db
+    .prepare('SELECT * FROM filters ORDER BY position ASC, created_at ASC')
+    .all();
+  res.json(rows.map(rowToFilter));
+});
+
+// ===========================================================================
+// Recipe filter assignment endpoints
+// ===========================================================================
+
+// POST /api/recipes/assign-all — AI-assign filters for every recipe.
+// NOTE: must be registered before /api/recipes/:id to avoid param capture.
+app.post('/api/recipes/assign-all', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({
+      error: 'Server is not configured for AI extraction. Set GEMINI_API_KEY in server/.env.',
+      code: 'CONFIG',
+    });
+  }
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+
+  const filterRows = db
+    .prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC')
+    .all();
+  const filterLabels = filterRows.map((r) => r.label);
+
+  const recipes = db.prepare('SELECT * FROM recipes').all();
+  const updateStmt = db.prepare(
+    'UPDATE recipes SET filters = ?, updated_at = ? WHERE id = ?'
+  );
+  const now = new Date().toISOString();
+
+  let updated = 0;
+  for (const recipeRow of recipes) {
+    const recipe = rowToRecipe(recipeRow);
+    try {
+      const assigned = await mod.assignFilters(recipe, filterLabels);
+      updateStmt.run(JSON.stringify(assigned), now, recipe.id);
+      updated += 1;
+    } catch (err) {
+      // Log but continue to next recipe.
+      console.warn(`[assign-all] assignFilters failed for ${recipe.id}:`, err.message);
+    }
+  }
+
+  res.json({ updated });
+});
+
+// POST /api/recipes/:id/assign-filters — AI-assign filters for a single recipe.
+app.post('/api/recipes/:id/assign-filters', async (req, res) => {
+  const recipeRow = db
+    .prepare('SELECT * FROM recipes WHERE id = ?')
+    .get(req.params.id);
+  if (!recipeRow) return res.status(404).json({ error: 'Recipe not found' });
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+
+  const filterRows = db
+    .prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC')
+    .all();
+  const filterLabels = filterRows.map((r) => r.label);
+  const recipe = rowToRecipe(recipeRow);
+
+  try {
+    const assigned = await mod.assignFilters(recipe, filterLabels);
+    const now = new Date().toISOString();
+    db.prepare('UPDATE recipes SET filters = ?, updated_at = ? WHERE id = ?').run(
+      JSON.stringify(assigned),
+      now,
+      recipe.id,
+    );
+    const updated = db.prepare('SELECT * FROM recipes WHERE id = ?').get(recipe.id);
+    res.json(rowToRecipe(updated));
+  } catch (err) {
+    if (err.code && err.userMessage) {
+      console.warn(`[assign-filters] ${err.code}: ${err.message}`);
+      return res.status(extractCodeToStatus(err.code)).json({
+        error: err.userMessage,
+        code: err.code,
+      });
+    }
+    console.error('[assign-filters] Unexpected error:', err);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+  }
 });
 
 // ===========================================================================
@@ -613,6 +876,17 @@ app.post('/api/extract', async (req, res) => {
 
   try {
     const draft = await mod.extractFromUrl(url);
+
+    // AI filter assignment — best-effort; never fail the extraction over it.
+    try {
+      const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
+      const filterLabels = filterRows.map((r) => r.label);
+      draft.filters = await mod.assignFilters(draft, filterLabels);
+    } catch (assignErr) {
+      console.warn('[extract/url] assignFilters failed (continuing):', assignErr.message);
+      draft.filters = [];
+    }
+
     res.json(draft);
   } catch (err) {
     if (err.code && err.userMessage) {
@@ -653,6 +927,17 @@ app.post(
 
     try {
       const draft = await mod.extractFromFile(tempPath, mimeType);
+
+      // AI filter assignment — best-effort; never fail the extraction over it.
+      try {
+        const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
+        const filterLabels = filterRows.map((r) => r.label);
+        draft.filters = await mod.assignFilters(draft, filterLabels);
+      } catch (assignErr) {
+        console.warn('[extract/upload] assignFilters failed (continuing):', assignErr.message);
+        draft.filters = [];
+      }
+
       res.json(draft);
     } catch (err) {
       if (err.code && err.userMessage) {
@@ -692,6 +977,17 @@ app.post('/api/extract-and-save', async (req, res) => {
 
   try {
     const draft = await mod.extractFromUrl(url);
+
+    // AI filter assignment — best-effort; never fail the save over it.
+    try {
+      const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
+      const filterLabels = filterRows.map((r) => r.label);
+      draft.filters = await mod.assignFilters(draft, filterLabels);
+    } catch (assignErr) {
+      console.warn('[extract-and-save] assignFilters failed (continuing):', assignErr.message);
+      draft.filters = [];
+    }
+
     const data = normalizeBody({ ...draft, source_url: url });
     if (!data.title) data.title = 'Imported recipe';
 
@@ -699,12 +995,12 @@ app.post('/api/extract-and-save', async (req, res) => {
     const id = randomUUID();
     db.prepare(
       `INSERT INTO recipes
-         (id, title, description, cuisine, category, minutes, servings, rating,
-          favorite, image, ingredients, steps, tags, source_url, source_caption,
+         (id, title, description, cuisine, category, protein, carb, minutes, servings, rating,
+          favorite, image, ingredients, steps, tags, filters, source_url, source_caption,
           created_at, updated_at)
        VALUES
-         (@id, @title, @description, @cuisine, @category, @minutes, @servings,
-          @rating, @favorite, @image, @ingredients, @steps, @tags,
+         (@id, @title, @description, @cuisine, @category, @protein, @carb, @minutes, @servings,
+          @rating, @favorite, @image, @ingredients, @steps, @tags, @filters,
           @source_url, @source_caption, @created_at, @updated_at)`
     ).run({
       id,
@@ -712,6 +1008,9 @@ app.post('/api/extract-and-save', async (req, res) => {
       ingredients: JSON.stringify(data.ingredients),
       steps: JSON.stringify(data.steps),
       tags: JSON.stringify(data.tags),
+      filters: JSON.stringify(data.filters),
+      protein: JSON.stringify(data.protein),
+      carb: JSON.stringify(data.carb),
       created_at: now,
       updated_at: now,
     });

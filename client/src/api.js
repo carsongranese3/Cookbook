@@ -54,6 +54,19 @@ export const api = {
     clearChecked: () => request('/shopping-list/clear-checked', { method: 'POST' }),
   },
 
+  // Filters (user-defined)
+  filters: {
+    list:    ()           => request('/filters'),
+    create:  (label)      => request('/filters', { method: 'POST', body: JSON.stringify({ label }) }),
+    rename:  (id, label)  => request(`/filters/${id}`, { method: 'PATCH', body: JSON.stringify({ label }) }),
+    remove:  (id)         => request(`/filters/${id}`, { method: 'DELETE' }),
+    reorder: (ids)        => request('/filters/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
+  },
+
+  // Per-recipe AI filter assignment
+  assignFilters: (id) => request(`/recipes/${id}/assign-filters`, { method: 'POST' }),
+  assignAll:     ()   => request('/recipes/assign-all', { method: 'POST' }),
+
   // AI Extract
   extract: {
     fromUrl: (url) =>

@@ -13,10 +13,11 @@ CORS: open (single-user private deployment)
 
 1. [Health](#1-health)
 2. [Recipes](#2-recipes)
-3. [Meal Plan](#3-meal-plan)
-4. [Shopping List](#4-shopping-list)
-5. [AI Extract](#5-ai-extract)
-6. [Common error shape](#6-common-error-shape)
+3. [Filters](#3-filters)
+4. [Meal Plan](#4-meal-plan)
+5. [Shopping List](#5-shopping-list)
+6. [AI Extract](#6-ai-extract)
+7. [Common error shape](#7-common-error-shape)
 
 ---
 
@@ -54,6 +55,7 @@ All recipe responses share the same full recipe object shape (see below).
   "ingredients":    [{ "name": "spaghetti", "qty": "8 oz" }],
   "steps":          ["Boil water.", "Cook pasta."],
   "tags":           ["Italian", "Vegetarian"],
+  "filters":        ["Chicken", "Quick"],
   "source_url":     "https://www.tiktok.com/... or null",
   "source_caption": "string or null",
   "created_at":     "2026-07-08T12:00:00.000Z",
@@ -68,6 +70,7 @@ Field notes:
 - `ingredients` is an array of `{ name: string, qty: string }` objects; `qty` is a display string in **imperial** units ("2 tbsp", "1 cup", "8 oz").
 - `steps` is an ordered array of strings.
 - `tags` is an array of strings. The "Vegetarian" Library chip matches recipes whose tags contain `"Vegetarian"` (case-insensitive).
+- `filters` is an array of user-defined filter label strings. Each entry must be a label that exists in the `GET /api/filters` list. AI extraction and the `/assign-filters` endpoints populate this automatically; it can also be set manually in `POST`/`PUT` recipe requests.
 - `image` is a URL or `null`; the frontend falls back to a deterministic gradient placeholder.
 
 ---
@@ -118,6 +121,7 @@ Create a new recipe.
   "ingredients":    [{ "name": "string", "qty": "string" }],
   "steps":          ["string"],
   "tags":           ["string"],
+  "filters":        ["string"],
   "source_url":     "string or null",
   "source_caption": "string or null"
 }
@@ -138,7 +142,7 @@ Replace all fields of an existing recipe.
 
 **Path param:** `id` — recipe UUID.
 
-**Request body** — same shape as POST.
+**Request body** — same shape as POST (include `filters` to set assignments explicitly).
 
 **Response 200** — updated recipe object.
 
@@ -179,7 +183,146 @@ If `favorite` is provided as `true` or `false`, it is set to that value.
 
 ---
 
-## 3. Meal Plan
+### `POST /api/recipes/:id/assign-filters`
+
+Run AI filter assignment for a single existing recipe. Loads the recipe + all user-defined filters, calls Gemini to pick which labels apply, saves the result to `recipe.filters`, and returns the updated full recipe object.
+
+**Path param:** `id` — recipe UUID.
+
+**Request body:** none.
+
+**Response 200** — updated recipe object (with `filters` field populated).
+
+**Response 404** — `{ "error": "Recipe not found" }`
+
+**Response 503** — extract module not available or `GEMINI_API_KEY` not set.
+
+Error responses for Gemini failures follow the extract error shape (see §6).
+
+---
+
+### `POST /api/recipes/assign-all`
+
+Run AI filter assignment for **every recipe** in the library. Processes recipes sequentially. Individual failures are logged and skipped; the endpoint always returns a count.
+
+If `GEMINI_API_KEY` is not set, returns 503 immediately.
+
+**Request body:** none.
+
+**Response 200**
+```json
+{ "updated": 12 }
+```
+
+`updated` — count of recipes whose `filters` were updated (failed recipes are not counted).
+
+**Response 503** — `GEMINI_API_KEY` not set or extract module unavailable.
+
+---
+
+## 3. Filters
+
+A flat, user-managed list of filter labels. Recipes store which labels are assigned to them in the `filters` field. The Library uses this list as its filter bar (replacing the old auto-derived protein/carb/category chips).
+
+### Filter object
+
+```json
+{
+  "id":         "uuid string",
+  "label":      "Chicken",
+  "position":   0,
+  "created_at": "2026-07-09T05:00:00.000Z"
+}
+```
+
+`position` controls display order (ascending). Managed via `PUT /api/filters/order`.
+
+---
+
+### `GET /api/filters`
+
+Return all filters, ordered by `position ASC, created_at ASC`.
+
+**Response 200** — array of filter objects.
+
+```json
+[{ ...filter }, ...]
+```
+
+---
+
+### `POST /api/filters`
+
+Create a new filter.
+
+**Request body:**
+```json
+{ "label": "Chicken" }
+```
+
+`label` is trimmed. If a filter with the same label already exists (case-insensitive), the existing filter is returned instead of creating a duplicate (idempotent).
+
+**Response 201** — the created filter object.
+
+**Response 200** — returned when a case-insensitive duplicate already exists (existing filter returned, not re-created).
+
+**Response 400** — `{ "error": "label is required" }` (empty or missing label).
+
+---
+
+### `PATCH /api/filters/:id`
+
+Rename a filter. Automatically cascades the rename into every recipe's `filters` array so assignments stay valid.
+
+**Path param:** `id` — filter UUID.
+
+**Request body:**
+```json
+{ "label": "Poultry" }
+```
+
+**Response 200** — updated filter object.
+
+**Response 400** — `{ "error": "label is required" }`
+
+**Response 404** — `{ "error": "Filter not found" }`
+
+Cascade: any recipe whose `filters` array contained the old label has it replaced with the new label atomically (SQLite transaction). `recipe.updated_at` is bumped for affected recipes.
+
+---
+
+### `DELETE /api/filters/:id`
+
+Delete a filter. Automatically removes that label from every recipe's `filters` array.
+
+**Path param:** `id` — filter UUID.
+
+**Response 204** — no body.
+
+**Response 404** — `{ "error": "Filter not found" }`
+
+Cascade: same atomic transaction as rename — affected recipes have the label removed and `updated_at` bumped.
+
+---
+
+### `PUT /api/filters/order`
+
+Set the display order for filters by supplying a complete ordered list of ids.
+
+**Request body:**
+```json
+{ "ids": ["uuid-1", "uuid-2", "uuid-3"] }
+```
+
+Each filter's `position` is set to its index in the array. IDs not present in the array are unaffected (their positions may become stale). Typically the frontend sends all ids.
+
+**Response 200** — the full reordered filter list (same shape as `GET /api/filters`).
+
+**Response 400** — `{ "error": "ids must be an array" }`
+
+---
+
+## 4. Meal Plan
 
 The meal plan is a join table: a day can hold multiple recipes; a recipe can appear on multiple days.
 
@@ -275,7 +418,7 @@ Remove a single meal-plan assignment.
 
 ---
 
-## 4. Shopping List
+## 5. Shopping List
 
 A flat ordered list of items. Positions are assigned automatically (append order).
 
@@ -396,14 +539,14 @@ Remove all checked items.
 
 ---
 
-## 5. AI Extract
+## 6. AI Extract
 
 Runs server-side only. The Gemini API key is never exposed to the browser.
 Both endpoints return a **draft recipe JSON** that is **not persisted** — the frontend displays it as an editable draft, and a separate `POST /api/recipes` call saves it.
 
 ### Draft recipe object
 
-Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `image`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time):
+Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time). The `filters` field **is** present — it is populated by AI assignment using the user's current filter list at extraction time:
 
 ```json
 {
@@ -413,9 +556,11 @@ Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated
   "category":    "string",
   "minutes":     25,
   "servings":    4,
+  "image":       "data:image/jpeg;base64,... or null",
   "ingredients": [{ "name": "string", "qty": "string (imperial)" }],
   "steps":       ["string"],
-  "tags":        []
+  "tags":        [],
+  "filters":     ["Chicken", "Quick"]
 }
 ```
 
@@ -486,14 +631,14 @@ The server saves the upload to a temp file, calls Gemini, then deletes the temp 
 
 ---
 
-## 6. Common error shape
+## 7. Common error shape
 
 All error responses follow:
 ```json
 { "error": "human-readable message" }
 ```
 
-Extract errors additionally carry `code` (see §5 table).
+Extract errors additionally carry `code` (see §6 table).
 
 Standard HTTP status codes used:
 - `200` — success

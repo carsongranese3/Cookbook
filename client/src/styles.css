@@ -355,6 +355,76 @@ a:hover { color: var(--accent-dark); }
   color: #fff;
 }
 
+/* ── Filter bar ─────────────────────────────────────────────────────────── */
+
+.filter-bar {
+  margin-top: 22px;
+}
+
+@media (max-width: 767px) {
+  .filter-bar { margin-top: 14px; }
+}
+
+/* Pinned chip row — scrolls horizontally on mobile, wraps on desktop */
+.filter-top-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.filter-top-row::-webkit-scrollbar { display: none; }
+
+/* Draggable chip: same look as .chip, drag cursor while interacting */
+.chip--draggable {
+  touch-action: none;
+  user-select: none;
+}
+
+.chip--draggable:active {
+  cursor: grabbing;
+}
+
+/* Chevron toggle button — small, unobtrusive, sits after the chips */
+.chip-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--fill);
+  color: var(--secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.chip-chevron:hover {
+  background: #e8e6e1;
+  color: var(--text);
+}
+
+.chip-chevron.open {
+  background: #e8e6e1;
+  color: var(--text);
+}
+
+/* Expanded rest area — wrapping chip row below the pinned row */
+.filter-rest-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
 /* ── Search input ───────────────────────────────────────────────────────── */
 .search-box {
   display: flex;
@@ -1044,6 +1114,36 @@ a:hover { color: var(--accent-dark); }
   display: flex;
   gap: 10px;
   margin-top: 24px;
+}
+
+/* Inline pill field used in the AI draft meta strip for protein/carb arrays */
+.draft-pill-field {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  cursor: text;
+}
+
+.draft-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 2px 6px;
+  font: 500 11px 'Onest';
+  color: var(--body);
+}
+
+.draft-pill button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
 }
 
 /* ── Meal Plan ──────────────────────────────────────────────────────────── */
@@ -1933,3 +2033,372 @@ a:hover { color: var(--accent-dark); }
 }
 
 .ph-manual-link:hover { color: var(--body); }
+
+/* ── Library filter bar wrapper ─────────────────────────────────────────── */
+.filter-bar-wrapper {
+  position: relative;
+}
+
+/* Manage Filters button — small, sits inline after filter chips */
+.manage-filters-btn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: var(--fill);
+  color: var(--secondary);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font: 500 11px 'Onest';
+  cursor: pointer;
+  margin-top: 10px;
+  transition: background 0.12s, color 0.12s;
+  gap: 3px;
+}
+
+.manage-filters-btn:hover {
+  background: #e8e6e1;
+  color: var(--text);
+}
+
+/* No-filters hint shown when user has no filters defined */
+.no-filters-hint {
+  font: 400 12px 'Onest';
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+.no-filters-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: 500 12px 'Onest';
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.no-filters-link:hover { color: var(--accent-dark); }
+
+/* ── Manage Filters Modal ────────────────────────────────────────────────── */
+.mf-modal-box {
+  width: 480px;
+}
+
+.mf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--border-light);
+  font: 600 15px 'Onest';
+  color: var(--text);
+  flex: none;
+}
+
+.mf-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+
+.mf-close-btn:hover {
+  color: var(--text);
+  background: var(--fill);
+}
+
+.mf-body {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Add-filter form row */
+.mf-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.mf-add-input {
+  flex: 1;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--fill);
+  padding: 0 12px;
+  font: 400 13px 'Onest';
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.mf-add-input:focus {
+  border-color: var(--text);
+}
+
+.mf-add-btn {
+  height: 36px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+
+.mf-add-error {
+  font: 400 12px 'Onest';
+  color: var(--danger);
+  margin: -8px 0 0;
+}
+
+.mf-empty {
+  font: 400 13px 'Onest';
+  color: var(--muted);
+  margin: 0;
+  text-align: center;
+  padding: 12px 0;
+}
+
+/* Filter list */
+.mf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Single row */
+.mf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--fill);
+  min-height: 38px;
+}
+
+/* Ghost row shown in DragOverlay — slightly elevated look */
+.mf-row--overlay {
+  box-shadow: 0 4px 14px rgba(0,0,0,.14);
+  cursor: grabbing;
+  opacity: 1;
+}
+
+.mf-grip {
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.mf-grip:hover { background: rgba(0,0,0,.06); }
+
+.mf-label {
+  flex: 1;
+  font: 500 13px 'Onest';
+  color: var(--body);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.mf-rename-input {
+  flex: 1;
+  height: 28px;
+  border: 1px solid var(--text);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 0 8px;
+  font: 500 13px 'Onest';
+  color: var(--text);
+  outline: none;
+  min-width: 0;
+}
+
+.mf-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.mf-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: color 0.12s, background 0.12s;
+}
+
+.mf-action-btn:hover {
+  color: var(--text);
+  background: rgba(0,0,0,.06);
+}
+
+.mf-delete-btn:hover {
+  color: var(--danger);
+  background: #fdf1f0;
+}
+
+/* AI section */
+.mf-ai-section {
+  border-top: 1px solid var(--border-light);
+  padding-top: 16px;
+}
+
+.mf-ai-label {
+  font: 600 12px 'Onest';
+  color: var(--label);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 6px;
+}
+
+.mf-ai-hint {
+  font: 400 12px 'Onest';
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+.mf-ai-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.mf-ai-msg {
+  font: 400 12px 'Onest';
+  color: var(--secondary);
+  margin: 8px 0 0;
+}
+
+.mf-ai-msg--error {
+  color: var(--danger);
+}
+
+/* Phone: mf modal becomes bottom sheet */
+@media (max-width: 767px) {
+  .mf-modal-box {
+    width: 100%;
+  }
+}
+
+/* ── Filter checklist in RecipeFormScreen & DraftCard ─────────────────── */
+.rf-filter-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.rf-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rf-filter-chip input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.rf-filter-chip-label {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border);
+  background: var(--fill);
+  font: 500 12px 'Onest';
+  color: var(--body);
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.rf-filter-chip:hover .rf-filter-chip-label {
+  border-color: #ccc9c3;
+  background: #eceae4;
+}
+
+.rf-filter-chip-label.checked {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--surface);
+}
+
+/* "AI suggested" ring on a checked chip in the draft */
+.rf-filter-chip-label.checked.ai-suggested {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Draft card filters section */
+.draft-filters-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.draft-filters-label {
+  font: 600 12px 'Onest';
+  color: var(--body);
+  margin-bottom: 8px;
+}
+
+.draft-filters-ai-hint {
+  font-weight: 400;
+  color: var(--accent);
+}
+
+/* ── Recipe Detail — Assign Filters button & filter chips ─────────────── */
+.detail-assign-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.detail-assigned-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.detail-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--fill);
+  border: 1px solid var(--border);
+  font: 500 11px 'Onest';
+  color: var(--body);
+}
