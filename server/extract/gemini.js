@@ -39,7 +39,7 @@ const MAX_FILE_BYTES  = 200 * 1024 * 1024; // 200 MB guard
  */
 function buildPrompt(caption) {
   const captionSection = caption
-    ? `\n\nVIDEO CAPTION / DESCRIPTION (use for exact quantities):\n"""\n${caption.slice(0, 4000)}\n"""`
+    ? `\n\nVIDEO CAPTION / DESCRIPTION AND AUTHOR COMMENTS (creators often post the full written recipe here — treat this as a primary source):\n"""\n${caption.slice(0, 6000)}\n"""`
     : '';
 
   return `You are a recipe extraction assistant. Watch the cooking video and extract a complete recipe.${captionSection}
@@ -53,18 +53,20 @@ Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no
   "servings": 0,
   "cuisine": "string — e.g. Italian, Mexican, American",
   "category": "string — one of Dinner, Breakfast, Dessert, or another category",
+  "hero_seconds": 0,
   "ingredients": [{ "name": "string", "qty": "string" }],
   "steps": ["string"]
 }
 
 Rules you must follow:
 1. CONVERT ALL MEASUREMENTS TO IMPERIAL. Weights → oz or lb. Volumes → cups, tbsp, tsp, or fl oz. Oven temperatures → °F. Lengths → inches. For dry goods given in grams, use standard culinary volume equivalents (e.g. 120 g flour ≈ 1 cup; 15 g butter ≈ 1 tbsp). For liquids given in ml, convert directly (240 ml ≈ 1 cup; 15 ml ≈ 1 tbsp; 5 ml ≈ 1 tsp). Amounts should be estimates the user can correct.
-2. Use the caption text (if provided above) for exact ingredient quantities the video does not state clearly.
-3. Do NOT invent ingredients. Only include what is shown, said, or written in the caption. If something is unclear, omit it rather than guess. If no recipe can be identified, return {"title":"","description":"","minutes":0,"servings":0,"cuisine":"","category":"","ingredients":[],"steps":[]}.
+2. The caption/description and author comments above OFTEN contain the full written recipe. Treat them as a PRIMARY source: if ingredients, quantities, or steps are written there, use them (reconciled with what the video shows) rather than guessing. Prefer written amounts over estimating from the video.
+3. Do NOT invent ingredients. Only include what is shown, said, or written in the caption. If something is unclear, omit it rather than guess. If no recipe can be identified, return {"title":"","description":"","minutes":0,"servings":0,"cuisine":"","category":"","hero_seconds":0,"ingredients":[],"steps":[]}.
 4. Target 5–9 ingredients and 4–7 concise imperative steps (e.g. "Mix flour and butter until crumbly.").
 5. "qty" is a display string like "2 cups", "1 tbsp", "1 lb", "350°F", or "" if unknown.
 6. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
-7. Return nothing outside the JSON object.`;
+7. "hero_seconds": the time in SECONDS (a number; decimals allowed) of the single best "hero" frame in the video — ideally the finished, plated dish looking its most appetizing, or the most visually appealing moment. This frame becomes the recipe's photo. Use 0 only if truly unsure.
+8. Return nothing outside the JSON object.`;
 }
 
 const RETRY_PROMPT =
@@ -115,6 +117,10 @@ function coerceDraft(raw) {
     const n = parseInt(String(v ?? ''), 10);
     return isFinite(n) && n >= 0 ? n : fallback;
   };
+  const num  = (v, fallback = null) => {
+    const n = parseFloat(String(v ?? ''));
+    return isFinite(n) && n >= 0 ? n : fallback;
+  };
 
   // Normalize ingredients: each item must be { name: string, qty: string }.
   const rawIngredients = Array.isArray(obj.ingredients) ? obj.ingredients : [];
@@ -147,6 +153,7 @@ function coerceDraft(raw) {
     servings:    int(obj.servings),
     cuisine:     str(obj.cuisine),
     category:    str(obj.category),
+    heroSeconds: num(obj.hero_seconds),
     ingredients,
     steps,
   };

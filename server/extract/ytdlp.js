@@ -157,6 +157,36 @@ function runYtdlp(args, { timeoutMs = 120_000 } = {}) {
  *   cleanup: () => Promise<void>,
  * }>}
  */
+
+/**
+ * Best-effort: fetch the author's / pinned comments, where creators often post
+ * the full written recipe. Never throws — returns '' on any failure or timeout.
+ * @param {string} url
+ * @param {string[]} cookieArgs
+ * @returns {Promise<string>}
+ */
+async function fetchAuthorComments(url, cookieArgs) {
+  try {
+    const { stdout } = await runYtdlp(
+      ['--dump-json', '--no-playlist', '--write-comments', ...cookieArgs, url],
+      { timeoutMs: 40_000 },
+    );
+    const meta = JSON.parse(stdout.trim());
+    const all = Array.isArray(meta.comments) ? meta.comments : [];
+    if (all.length === 0) return '';
+    // Prefer the uploader's own comments and pinned ones (recipe usually lives there).
+    const authored = all.filter((c) => c && (c.author_is_uploader || c.is_pinned));
+    const picked = (authored.length ? authored : all).slice(0, 15);
+    return picked
+      .map((c) => (typeof c.text === 'string' ? c.text.trim() : ''))
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(0, 4000);
+  } catch {
+    return ''; // comments are a bonus; never break extraction over them
+  }
+}
+
 export async function downloadVideo(url) {
   validateUrl(url);
 
@@ -181,6 +211,17 @@ export async function downloadVideo(url) {
     // JSON parse of metadata is non-fatal — we can still attempt the video.
     console.warn('[ytdlp] Could not parse metadata JSON:', err.message);
   }
+
+  // ── Step 1b: best-effort — append author's / pinned comments (creators
+  // often post the full written recipe there). Never blocks or fails. ──────
+  try {
+    const commentText = await fetchAuthorComments(url, cookieArgs);
+    if (commentText) {
+      caption = caption
+        ? `${caption}\n\n--- AUTHOR / PINNED COMMENTS ---\n${commentText}`
+        : commentText;
+    }
+  } catch { /* best-effort only */ }
 
   // ── Step 2: download video to a temp directory ──────────────────────────
   const tmpDir  = join(tmpdir(), `cookbook-${randomUUID()}`);

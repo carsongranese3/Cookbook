@@ -126,6 +126,7 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
         category:    (draft.category || '').trim(),
         minutes:     draft.minutes ? parseInt(draft.minutes, 10) : null,
         servings:    draft.servings ? parseInt(draft.servings, 10) : null,
+        image:       draft.image || null,
         ingredients: (draft.ingredients || []).filter((i) => i.name?.trim()),
         steps:       (draft.steps || []).filter((s) => s?.trim()),
         tags:        draft.tags || [],

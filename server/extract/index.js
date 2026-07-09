@@ -29,8 +29,9 @@
  * @module server/extract
  */
 
-import { downloadVideo }     from './ytdlp.js';
-import { extractWithGemini } from './gemini.js';
+import { downloadVideo }        from './ytdlp.js';
+import { extractWithGemini }    from './gemini.js';
+import { pickHeroFrameDataUri } from './frame.js';
 export { ExtractError, CODES } from './errors.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ export { ExtractError, CODES } from './errors.js';
  * @property {string}           category    e.g. "Dinner", "Breakfast", "Dessert"; empty if unknown.
  * @property {IngredientItem[]} ingredients Normalized, imperial units.
  * @property {string[]}         steps       Ordered imperative step text.
+ * @property {string|null}      image       AI-picked hero frame as a JPEG data URI, or null.
  */
 
 // ---------------------------------------------------------------------------
@@ -70,7 +72,11 @@ export async function extractFromUrl(url) {
   const { filePath, mimeType, caption, cleanup } = await downloadVideo(url);
 
   try {
-    return await extractWithGemini(filePath, mimeType, caption);
+    const draft = await extractWithGemini(filePath, mimeType, caption);
+    // AI-picked hero frame → recipe photo (best-effort; null falls back to a gradient).
+    draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
+    delete draft.heroSeconds;
+    return draft;
   } finally {
     // Always clean up the temp file, even if extraction fails.
     await cleanup();
@@ -92,5 +98,8 @@ export async function extractFromUrl(url) {
  * @throws {import('./errors.js').ExtractError}
  */
 export async function extractFromFile(filePath, mimeType) {
-  return extractWithGemini(filePath, mimeType, '');
+  const draft = await extractWithGemini(filePath, mimeType, '');
+  draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
+  delete draft.heroSeconds;
+  return draft;
 }

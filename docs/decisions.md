@@ -51,3 +51,17 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
   Recipe Detail (Delete confirmed); phone Add tab gets an "Enter manually" link. Reuse/evolve `RecipeForm`.
 - **Extract endpoints** → two: `POST /api/extract` (URL) + `POST /api/extract/upload` (multipart).
 - **Manual shopping duplicates** → allowed; only recipe-add de-dupes by name.
+
+## 2026-07-08 — AI-picked recipe photo (hero frame)
+- The extraction prompt now also returns `hero_seconds` — the timestamp of the best "hero"
+  frame (finished/plated dish at its most appetizing). `server/extract/frame.js` uses **ffmpeg**
+  to grab that frame (scaled to ≤720px wide JPEG) and returns it as a **base64 data URI** set on
+  `draft.image`; the frontend previews it and persists it via `POST /api/recipes`.
+- Best-effort: if ffmpeg is missing / the timestamp is out of range / anything fails, `image` is
+  null and the recipe falls back to the deterministic gradient placeholder. A 1.0s fallback frame
+  is tried before giving up.
+- **Storage choice:** the image is a **data URI stored in the `image` TEXT column** (not a
+  separate file/CDN). Simplest for the draft→save→discard flow (no orphan files, no static
+  serving, no delete cleanup). Tradeoff: image bytes ride in `GET /api/recipes` payloads — fine
+  for a personal single-user library; revisit with file storage if the collection grows large.
+- Requires **ffmpeg** on PATH (already present as a yt-dlp merge dependency).

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cookbook.server</string>
+
+  <!-- Run the Cookbook server (serves API + built app on port 3001). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/carsongranese/.nvm/versions/node/v20.20.0/bin/node</string>
+    <string>/Users/carsongranese/dev/GitHub/Cookbook/server/index.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/server</string>
+
+  <!-- PATH must include node + Homebrew bins so yt-dlp and ffmpeg are found. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/carsongranese/.nvm/versions/node/v20.20.0/bin:/opt/homebrew/bin:/Users/carsongranese/.homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+
+  <!-- Start at login and restart if it ever crashes = "always on". -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Logs (gitignored via *.log). -->
+  <key>StandardOutPath</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/server/cookbook.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/server/cookbook.log</string>
+</dict>
+</plist>

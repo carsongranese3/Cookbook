@@ -7,6 +7,7 @@ import { unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import db from './db.js';
 
 // Load server/.env into process.env (Node >= 20.12). Harmless if absent —
@@ -670,6 +671,82 @@ app.post(
   }
 );
 
+// POST /api/extract-and-save — one-shot: extract a recipe from an IG/TikTok URL
+// AND save it, returning the created recipe. Used by the iOS "Add to Cookbook"
+// share Shortcut (fire-and-forget from the Instagram/TikTok share sheet — no
+// review step). The regular two-step flow (/api/extract → edit → POST /api/recipes)
+// is unchanged.
+app.post('/api/extract-and-save', async (req, res) => {
+  const { url } = req.body ?? {};
+  if (!url) {
+    return res.status(400).json({ error: 'url is required', code: 'UNSUPPORTED_URL' });
+  }
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+
+  try {
+    const draft = await mod.extractFromUrl(url);
+    const data = normalizeBody({ ...draft, source_url: url });
+    if (!data.title) data.title = 'Imported recipe';
+
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    db.prepare(
+      `INSERT INTO recipes
+         (id, title, description, cuisine, category, minutes, servings, rating,
+          favorite, image, ingredients, steps, tags, source_url, source_caption,
+          created_at, updated_at)
+       VALUES
+         (@id, @title, @description, @cuisine, @category, @minutes, @servings,
+          @rating, @favorite, @image, @ingredients, @steps, @tags,
+          @source_url, @source_caption, @created_at, @updated_at)`
+    ).run({
+      id,
+      ...data,
+      ingredients: JSON.stringify(data.ingredients),
+      steps: JSON.stringify(data.steps),
+      tags: JSON.stringify(data.tags),
+      created_at: now,
+      updated_at: now,
+    });
+    const row = db.prepare('SELECT * FROM recipes WHERE id = ?').get(id);
+    res.status(201).json(rowToRecipe(row));
+  } catch (err) {
+    if (err.code && err.userMessage) {
+      console.warn(`[extract-and-save] ${err.code}: ${err.message}`);
+      return res.status(extractCodeToStatus(err.code)).json({
+        error: err.userMessage,
+        code: err.code,
+      });
+    }
+    console.error('[extract-and-save] Unexpected error:', err);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+  }
+});
+
+// ===========================================================================
+// Serve the built frontend (single-process production mode)
+// ===========================================================================
+
+// When client/dist exists (i.e. after `npm run build` in client/), serve the
+// whole app from this one server so a single always-on process runs everything.
+// In dev there's no dist and the Vite dev server handles the UI instead.
+const clientDist = fileURLToPath(new URL('../client/dist', import.meta.url));
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  // SPA fallback: any non-API GET returns index.html.
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(join(clientDist, 'index.html'));
+  });
+}
+
 // ===========================================================================
 // Error handling
 // ===========================================================================
@@ -699,5 +776,10 @@ app.use((err, req, res, next) => {
 // ===========================================================================
 
 app.listen(PORT, () => {
-  console.log(`Cookbook API listening on http://localhost:${PORT}`);
+  const servesApp = existsSync(clientDist);
+  console.log(
+    servesApp
+      ? `Cookbook running on http://localhost:${PORT} (API + app)`
+      : `Cookbook API listening on http://localhost:${PORT} (run "npm run build" in client/ to serve the app too)`,
+  );
 });

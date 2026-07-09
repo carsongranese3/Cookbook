@@ -76,7 +76,9 @@ export default function AppShell({ activeTab, onNav, recipeCount, children }) {
         </a>
 
         <nav className="sidebar-nav">
-          {NAV_ITEMS.map((item) => (
+          {/* 'add' is intentionally omitted on desktop — use the "+ New recipe"
+              button (which has an Import-from-video toggle). Phone keeps its Add tab. */}
+          {NAV_ITEMS.filter((item) => item.id !== 'add').map((item) => (
             <button
               key={item.id}
               className={`sidebar-nav-item ${activeTab === item.id ? 'active' : ''}`}
