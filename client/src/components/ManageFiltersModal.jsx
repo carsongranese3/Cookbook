@@ -2,18 +2,13 @@
  * ManageFiltersModal
  *
  * Modal for managing user-defined filters:
+ * - Search input filters the visible list by label (case-insensitive substring)
+ * - List is displayed in alphabetical order (case-insensitive)
  * - Create new filters
- * - Inline rename / delete
- * - Drag-to-reorder (calls PUT /api/filters/order on drop)
+ * - Inline rename (pencil button or double-click label) / delete per row
  * - "Re-run AI on all recipes" button
  *
- * Neighbor-shift during drag:
- * - FilterRow applies both CSS.Transform and transition from useSortable,
- *   so every non-dragged row animates into its new slot as the pointer moves.
- * - onDragOver fires on every item-crossing and calls arrayMove + setList
- *   so SortableContext items updates in real time → live gap animation.
- * - onDragEnd persists the already-settled order to the server.
- * - DragOverlay renders a floating ghost of the dragged row under the pointer.
+ * No drag-and-drop — order is always alphabetical.
  *
  * Props:
  *   filters:         [{id, label, position}]  current server list
@@ -21,54 +16,14 @@
  *   onFiltersChange: (updatedList) => void    called after any mutation
  *   onRecipesChange: () => void               called after assign-all to refresh recipe list
  */
-import { useState, useRef } from 'react';
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  TouchSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
-  closestCenter,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  useSortable,
-  arrayMove,
-  sortableKeyboardCoordinates,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { useState } from 'react';
 import { api } from '../api.js';
 
-// ── Grip icon ─────────────────────────────────────────────────────────────────
-function GripIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" style={{ opacity: 0.35, flexShrink: 0 }}>
-      <circle cx="3" cy="2.5" r="1.1" /><circle cx="9" cy="2.5" r="1.1" />
-      <circle cx="3" cy="6"   r="1.1" /><circle cx="9" cy="6"   r="1.1" />
-      <circle cx="3" cy="9.5" r="1.1" /><circle cx="9" cy="9.5" r="1.1" />
-    </svg>
-  );
-}
-
-// ── A single sortable filter row ──────────────────────────────────────────────
-function FilterRow({ filter, onRename, onDelete, isDragOverlay = false }) {
+// ── A single filter row (rename / delete) ─────────────────────────────────────
+function FilterRow({ filter, onRename, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal]         = useState(filter.label);
   const [saving, setSaving]   = useState(false);
-
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: filter.id });
-
-  // Apply transform + transition so neighbors animate as the active row passes them.
-  // Original slot goes invisible (opacity 0) while the DragOverlay ghost is shown.
-  const style = isDragOverlay ? {} : {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0 : 1,
-  };
 
   async function commitRename() {
     const trimmed = val.trim();
@@ -82,7 +37,7 @@ function FilterRow({ filter, onRename, onDelete, isDragOverlay = false }) {
       const updated = await api.filters.rename(filter.id, trimmed);
       onRename(filter.id, updated.label);
     } catch {
-      setVal(filter.label); // revert
+      setVal(filter.label); // revert on error
     } finally {
       setSaving(false);
       setEditing(false);
@@ -90,19 +45,7 @@ function FilterRow({ filter, onRename, onDelete, isDragOverlay = false }) {
   }
 
   return (
-    <div
-      ref={isDragOverlay ? undefined : setNodeRef}
-      style={style}
-      className={`mf-row${isDragOverlay ? ' mf-row--overlay' : ''}`}
-    >
-      <span
-        className="mf-grip"
-        {...(isDragOverlay ? {} : { ...attributes, ...listeners })}
-        aria-label="Drag to reorder"
-      >
-        <GripIcon />
-      </span>
-
+    <div className="mf-row">
       {editing ? (
         <input
           className="mf-rename-input"
@@ -110,7 +53,7 @@ function FilterRow({ filter, onRename, onDelete, isDragOverlay = false }) {
           onChange={(e) => setVal(e.target.value)}
           onBlur={commitRename}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+            if (e.key === 'Enter')  { e.preventDefault(); commitRename(); }
             if (e.key === 'Escape') { setVal(filter.label); setEditing(false); }
           }}
           autoFocus
@@ -158,27 +101,21 @@ function FilterRow({ filter, onRename, onDelete, isDragOverlay = false }) {
 // ── Main modal ────────────────────────────────────────────────────────────────
 export default function ManageFiltersModal({ filters, onClose, onFiltersChange, onRecipesChange }) {
   const [list, setList]         = useState(filters);
-  const listRef                 = useRef(list); // mirror of list for sync access in handlers
+  const [search, setSearch]     = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [adding, setAdding]     = useState(false);
   const [addError, setAddError] = useState('');
   const [aiState, setAiState]   = useState('idle'); // idle | running | done | error
   const [aiMsg, setAiMsg]       = useState('');
 
-  // The filter being dragged (for the DragOverlay ghost)
-  const [draggedFilter, setDraggedFilter] = useState(null);
-
-  // Keep ref in sync whenever list changes
-  function updateList(next) {
-    listRef.current = next;
-    setList(next);
-  }
-
-  const sensors = useSensors(
-    useSensor(PointerSensor,  { activationConstraint: { distance: 5 } }),
-    useSensor(TouchSensor,    { activationConstraint: { delay: 150, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  // Alphabetical sort (case-insensitive), then filter by search query
+  const sortedList = [...list].sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
   );
+  const searchLower   = search.trim().toLowerCase();
+  const visibleList   = searchLower
+    ? sortedList.filter((f) => f.label.toLowerCase().includes(searchLower))
+    : sortedList;
 
   // ── Create ────────────────────────────────────────────────────────────────
   async function handleAdd(e) {
@@ -190,7 +127,7 @@ export default function ManageFiltersModal({ filters, onClose, onFiltersChange, 
     try {
       const created = await api.filters.create(label);
       const updated = [...list, created];
-      updateList(updated);
+      setList(updated);
       onFiltersChange(updated);
       setNewLabel('');
     } catch (err) {
@@ -200,10 +137,10 @@ export default function ManageFiltersModal({ filters, onClose, onFiltersChange, 
     }
   }
 
-  // ── Rename (from row callback) ────────────────────────────────────────────
+  // ── Rename ────────────────────────────────────────────────────────────────
   function handleRename(id, newLabelValue) {
     const updated = list.map((f) => f.id === id ? { ...f, label: newLabelValue } : f);
-    updateList(updated);
+    setList(updated);
     onFiltersChange(updated);
   }
 
@@ -212,57 +149,11 @@ export default function ManageFiltersModal({ filters, onClose, onFiltersChange, 
     try {
       await api.filters.remove(id);
       const updated = list.filter((f) => f.id !== id);
-      updateList(updated);
+      setList(updated);
       onFiltersChange(updated);
     } catch {
-      // silent — list stays as-is
+      // silent — stays as-is if the server call fails
     }
-  }
-
-  // ── Drag start — record which filter is being dragged ─────────────────────
-  function handleDragStart({ active }) {
-    const f = list.find((item) => item.id === active.id);
-    setDraggedFilter(f || null);
-  }
-
-  /**
-   * onDragOver: update list order live as the pointer crosses each row.
-   * This makes SortableContext items change mid-drag, which drives the
-   * CSS transform/transition on every neighbor row → visible gap animation.
-   */
-  function handleDragOver({ active, over }) {
-    if (!over || active.id === over.id) return;
-    const prev = listRef.current;
-    const oldIndex = prev.findIndex((f) => f.id === active.id);
-    const newIndex = prev.findIndex((f) => f.id === over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
-    const next = arrayMove(prev, oldIndex, newIndex);
-    updateList(next);
-  }
-
-  /**
-   * onDragEnd: list is already in the correct visual order from onDragOver
-   * (listRef.current holds the settled order). Just persist to the server.
-   */
-  async function handleDragEnd() {
-    setDraggedFilter(null);
-    const current = listRef.current;
-    onFiltersChange(current);
-    const ids = current.map((f) => f.id);
-    try {
-      await api.filters.reorder(ids);
-    } catch {
-      // On network error, revert to the original committed order
-      updateList(filters);
-      onFiltersChange(filters);
-    }
-  }
-
-  function handleDragCancel() {
-    setDraggedFilter(null);
-    // Revert live reorder — onDragOver may have partially shifted things
-    updateList(filters);
-    onFiltersChange(filters);
   }
 
   // ── Re-run AI on all recipes ──────────────────────────────────────────────
@@ -328,46 +219,49 @@ export default function ManageFiltersModal({ filters, onClose, onFiltersChange, 
           </form>
           {addError && <p className="mf-add-error">{addError}</p>}
 
+          {/* Search */}
+          {list.length > 0 && (
+            <div className="mf-search-row">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ flexShrink: 0, opacity: 0.4 }}>
+                <circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>
+              </svg>
+              <input
+                className="mf-search-input"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search filters…"
+                aria-label="Search filters"
+              />
+              {search && (
+                <button
+                  className="mf-search-clear"
+                  onClick={() => setSearch('')}
+                  aria-label="Clear search"
+                >
+                  <svg width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="M1 1l12 12M13 1L1 13"/>
+                  </svg>
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Filter list */}
           {list.length === 0 ? (
             <p className="mf-empty">No filters yet. Add one above.</p>
+          ) : visibleList.length === 0 ? (
+            <p className="mf-empty">No filters match &ldquo;{search}&rdquo;.</p>
           ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-              onDragEnd={handleDragEnd}
-              onDragCancel={handleDragCancel}
-            >
-              <SortableContext
-                items={list.map((f) => f.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                <div className="mf-list">
-                  {list.map((f) => (
-                    <FilterRow
-                      key={f.id}
-                      filter={f}
-                      onRename={handleRename}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              </SortableContext>
-
-              {/* Floating ghost row that follows the pointer during drag */}
-              <DragOverlay dropAnimation={null}>
-                {draggedFilter ? (
-                  <FilterRow
-                    filter={draggedFilter}
-                    onRename={() => {}}
-                    onDelete={() => {}}
-                    isDragOverlay
-                  />
-                ) : null}
-              </DragOverlay>
-            </DndContext>
+            <div className="mf-list">
+              {visibleList.map((f) => (
+                <FilterRow
+                  key={f.id}
+                  filter={f}
+                  onRename={handleRename}
+                  onDelete={handleDelete}
+                />
+              ))}
+            </div>
           )}
 
           {/* AI re-assign section */}

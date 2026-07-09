@@ -90,6 +90,8 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
         msg = "Couldn't find a recipe in that video. Try a different video or upload a file.";
       } else if (code === 'TIMEOUT') {
         msg = 'The request timed out. Try again or upload a file instead.';
+      } else if (code === 'RATE_LIMITED' || e.status === 429) {
+        msg = e.message || 'The AI is over its free-tier limit or busy. Wait a bit and try again.';
       } else if (code === 'CONFIG' || e.status === 503) {
         msg = 'AI extraction is not configured on the server.';
       }

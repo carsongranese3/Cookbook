@@ -15,6 +15,7 @@ export const CODES = /** @type {const} */ ({
   PARSE_FAILED:    'PARSE_FAILED',
   TIMEOUT:         'TIMEOUT',
   CONFIG:          'CONFIG',
+  RATE_LIMITED:    'RATE_LIMITED',
 });
 
 const DEFAULT_MESSAGES = {
@@ -24,6 +25,7 @@ const DEFAULT_MESSAGES = {
   [CODES.PARSE_FAILED]:    'The AI returned an unreadable response. Try again or upload the file instead.',
   [CODES.TIMEOUT]:         'The request timed out. Try again or upload the file instead.',
   [CODES.CONFIG]:          'Server configuration error. Contact the administrator.',
+  [CODES.RATE_LIMITED]:    'The AI is over its free-tier limit or busy right now. Wait a bit and try again, or enable billing on your Gemini key.',
 };
 
 export class ExtractError extends Error {

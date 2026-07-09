@@ -116,13 +116,7 @@ export async function assignFilters(recipe, filterLabels) {
     const parsed = JSON.parse(cleaned);
     if (!Array.isArray(parsed)) return [];
 
-    // Build a lowercase lookup map from the canonical labels list.
-    const labelMap = new Map(filterLabels.map((l) => [l.toLowerCase(), l]));
-
-    return parsed
-      .filter((item) => typeof item === 'string')
-      .map((item) => labelMap.get(item.toLowerCase().trim()))
-      .filter(Boolean);
+    return canonicalizeLabels(parsed, filterLabels);
   } catch {
     console.warn('[assignFilters] Could not parse Gemini response; returning []');
     return [];
@@ -136,6 +130,20 @@ const DEFAULT_MODEL   = 'gemini-2.0-flash';
 const TIMEOUT_MS      = parseInt(process.env.GEMINI_TIMEOUT_MS ?? '', 10) || 120_000;
 const MAX_FILE_BYTES  = 200 * 1024 * 1024; // 200 MB guard
 
+/** Map raw model-returned labels to the canonical user labels (case-insensitive, de-duped). */
+function canonicalizeLabels(rawLabels, allowed) {
+  if (!Array.isArray(rawLabels) || !Array.isArray(allowed) || allowed.length === 0) return [];
+  const map = new Map(allowed.map((l) => [String(l).toLowerCase(), l]));
+  const seen = new Set();
+  const out = [];
+  for (const item of rawLabels) {
+    if (typeof item !== 'string') continue;
+    const canon = map.get(item.toLowerCase().trim());
+    if (canon && !seen.has(canon)) { seen.add(canon); out.push(canon); }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Prompt
 // ---------------------------------------------------------------------------
@@ -147,12 +155,23 @@ const MAX_FILE_BYTES  = 200 * 1024 * 1024; // 200 MB guard
  * @param {string} caption  Raw caption / description text (may be empty).
  * @returns {string}
  */
-function buildPrompt(caption) {
+function buildPrompt(caption, filterLabels = []) {
   const captionSection = caption
     ? `\n\nVIDEO CAPTION / DESCRIPTION AND AUTHOR COMMENTS (creators often post the full written recipe here — treat this as a primary source):\n"""\n${caption.slice(0, 6000)}\n"""`
     : '';
 
-  return `You are a recipe extraction assistant. Watch the cooking video and extract a complete recipe.${captionSection}
+  const hasFilters = Array.isArray(filterLabels) && filterLabels.length > 0;
+  const filtersSection = hasFilters
+    ? `\n\nAVAILABLE FILTERS (a fixed list the user maintains): ${JSON.stringify(filterLabels)}`
+    : '';
+  const filtersShapeLine = hasFilters
+    ? '\n  "filters": ["string — labels chosen ONLY from AVAILABLE FILTERS"],'
+    : '';
+  const filtersRule = hasFilters
+    ? '\n\nAlso set "filters": an array of labels chosen ONLY from the AVAILABLE FILTERS list above that clearly apply to this dish. Use exact strings from that list; do not invent, rename, or add. Empty array if none apply.'
+    : '';
+
+  return `You are a recipe extraction assistant. Watch the cooking video and extract a complete recipe.${captionSection}${filtersSection}
 
 Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no commentary before or after. The JSON must match this exact shape:
 
@@ -165,7 +184,7 @@ Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no
   "category": "string — one of Dinner, Breakfast, Dessert, or another category",
   "protein": ["string — main protein(s); usually one, but list multiple for e.g. surf & turf"],
   "carb": ["string — main carb(s); usually one, list multiple if the dish genuinely has more"],
-  "hero_seconds": 0,
+  "hero_seconds": 0,${filtersShapeLine}
   "ingredients": [{ "name": "string", "qty": "string" }],
   "steps": ["string"]
 }
@@ -179,7 +198,7 @@ Rules you must follow:
 6. "protein" and "carb" are ARRAYS of the dish's MAIN protein(s) and MAIN carb(s) — the defining ingredients, not incidental ones (an omelette's protein is ["Egg"]; banana bread's protein is [] even though it contains eggs). USUALLY ONE each, but include multiple when the dish genuinely centers on more than one (surf & turf → ["Beef","Shrimp"]; a bowl served over both rice and noodles → ["Rice","Noodles"]). Use short canonical words (Chicken, Beef, Pork, Turkey, Lamb, Shrimp, Fish, Tofu, Egg, Beans; Rice, Noodles, Pasta, Bread, Potato, Quinoa, Couscous). Empty array [] if the dish has no main protein or no main carb.
 7. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
 8. "hero_seconds": the time in SECONDS (a number; decimals allowed) of the single best "hero" frame in the video — ideally the finished, plated dish looking its most appetizing, or the most visually appealing moment. This frame becomes the recipe's photo. Use 0 only if truly unsure.
-9. Return nothing outside the JSON object.`;
+9. Return nothing outside the JSON object.${filtersRule}`;
 }
 
 const RETRY_PROMPT =
@@ -274,6 +293,7 @@ function coerceDraft(raw) {
     protein:     strArr(obj.protein),
     carb:        strArr(obj.carb),
     heroSeconds: num(obj.hero_seconds),
+    filters: strArr(obj.filters),
     ingredients,
     steps,
   };
@@ -302,6 +322,39 @@ function withTimeout(promise, ms) {
   ]);
 }
 
+/**
+ * Classify a raw Gemini SDK error. 429/quota and 503/overload become
+ * RATE_LIMITED (with a truthful message); anything else is a generic FETCH_FAILED.
+ */
+function classifyGeminiError(err) {
+  const msg = String(err?.message || '');
+  if (/\b429\b|quota|too many requests|resource[_ ]?exhausted/i.test(msg)) {
+    return new ExtractError(CODES.RATE_LIMITED, `Gemini quota/rate limit: ${msg}`);
+  }
+  if (/\b503\b|overloaded|high demand|unavailable/i.test(msg)) {
+    return new ExtractError(
+      CODES.RATE_LIMITED, `Gemini overloaded: ${msg}`,
+      'The AI model is busy right now (high demand). Try again in a moment.',
+    );
+  }
+  return new ExtractError(CODES.FETCH_FAILED, `Gemini generateContent failed: ${msg}`);
+}
+
+/**
+ * Ordered list of models to try. Each free-tier model has its OWN daily quota
+ * bucket, so on a 429/503 we fall through to the next — maximizing free-tier
+ * throughput without billing. Override with GEMINI_MODELS (comma-separated),
+ * or set the primary with GEMINI_MODEL.
+ */
+function resolveModelChain() {
+  if (process.env.GEMINI_MODELS) {
+    return process.env.GEMINI_MODELS.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const fallbacks = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
+  return [...new Set([primary, ...fallbacks])];
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -315,7 +368,7 @@ function withTimeout(promise, ms) {
  * @param {string} [caption]  Optional caption/description text from yt-dlp.
  * @returns {Promise<import('./index.js').DraftRecipe>}
  */
-export async function extractWithGemini(filePath, mimeType, caption = '') {
+export async function extractWithGemini(filePath, mimeType, caption = '', filterLabels = []) {
   // ── Guard: API key ────────────────────────────────────────────────────────
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -414,7 +467,7 @@ export async function extractWithGemini(filePath, mimeType, caption = '') {
 
   // ── Run the extraction prompt ─────────────────────────────────────────────
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: modelId });
+  const modelChain = resolveModelChain();
 
   const filePart = {
     fileData: {
@@ -424,28 +477,38 @@ export async function extractWithGemini(filePath, mimeType, caption = '') {
   };
 
   /**
-   * Call the model once and return the raw text response.
+   * Call the model with fallback: try each model in the chain; on a 429/503
+   * (RATE_LIMITED) fall through to the next free-tier model (separate quota
+   * buckets). Non-rate-limit errors stop immediately.
    * @param {string} promptText
    * @returns {Promise<string>}
    */
   async function callModel(promptText) {
-    const result = await withTimeout(
-      model.generateContent([promptText, filePart]),
-      TIMEOUT_MS,
-    );
-    return result.response.text();
+    let lastRateErr;
+    for (const id of modelChain) {
+      try {
+        const model = genAI.getGenerativeModel({ model: id });
+        const result = await withTimeout(
+          model.generateContent([promptText, filePart]),
+          TIMEOUT_MS,
+        );
+        return result.response.text();
+      } catch (err) {
+        const e = err instanceof ExtractError ? err : classifyGeminiError(err);
+        if (e.code === CODES.RATE_LIMITED) { lastRateErr = e; continue; }
+        throw e;
+      }
+    }
+    throw lastRateErr ?? new ExtractError(CODES.RATE_LIMITED, 'All Gemini models are rate-limited or unavailable.');
   }
 
   // ── First attempt ─────────────────────────────────────────────────────────
   let rawText;
   try {
-    rawText = await callModel(buildPrompt(caption));
+    rawText = await callModel(buildPrompt(caption, filterLabels));
   } catch (err) {
     if (err instanceof ExtractError) throw err;
-    throw new ExtractError(
-      CODES.FETCH_FAILED,
-      `Gemini generateContent failed: ${err.message}`,
-    );
+    throw classifyGeminiError(err);
   }
 
   // ── Parse first attempt ───────────────────────────────────────────────────
@@ -478,6 +541,8 @@ export async function extractWithGemini(filePath, mimeType, caption = '') {
 
   // ── Coerce into draft shape ───────────────────────────────────────────────
   const draft = coerceDraft(parsed);
+  // Fold filter assignment into this single call: keep only labels from the user's list.
+  draft.filters = canonicalizeLabels(draft.filters, filterLabels);
 
   // ── Guard: no recipe detected ─────────────────────────────────────────────
   if (draft.ingredients.length === 0 && draft.steps.length === 0) {

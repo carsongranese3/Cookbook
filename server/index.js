@@ -151,6 +151,7 @@ function extractCodeToStatus(code) {
     case 'FETCH_FAILED':    return 502;
     case 'TIMEOUT':         return 504;
     case 'CONFIG':          return 503;
+    case 'RATE_LIMITED':    return 429;
     default:                return 500;
   }
 }
@@ -875,18 +876,13 @@ app.post('/api/extract', async (req, res) => {
   }
 
   try {
-    const draft = await mod.extractFromUrl(url);
-
-    // AI filter assignment — best-effort; never fail the extraction over it.
-    try {
-      const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
-      const filterLabels = filterRows.map((r) => r.label);
-      draft.filters = await mod.assignFilters(draft, filterLabels);
-    } catch (assignErr) {
-      console.warn('[extract/url] assignFilters failed (continuing):', assignErr.message);
-      draft.filters = [];
-    }
-
+    // Load the user's filter labels and pass them into extraction so the AI
+    // assigns filters in the SAME call (1 Gemini call per import, not 2).
+    const filterLabels = db
+      .prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC')
+      .all()
+      .map((r) => r.label);
+    const draft = await mod.extractFromUrl(url, filterLabels);
     res.json(draft);
   } catch (err) {
     if (err.code && err.userMessage) {
@@ -926,18 +922,11 @@ app.post(
     const mimeType = req.file.mimetype || 'video/mp4';
 
     try {
-      const draft = await mod.extractFromFile(tempPath, mimeType);
-
-      // AI filter assignment — best-effort; never fail the extraction over it.
-      try {
-        const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
-        const filterLabels = filterRows.map((r) => r.label);
-        draft.filters = await mod.assignFilters(draft, filterLabels);
-      } catch (assignErr) {
-        console.warn('[extract/upload] assignFilters failed (continuing):', assignErr.message);
-        draft.filters = [];
-      }
-
+      const filterLabels = db
+        .prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC')
+        .all()
+        .map((r) => r.label);
+      const draft = await mod.extractFromFile(tempPath, mimeType, filterLabels);
       res.json(draft);
     } catch (err) {
       if (err.code && err.userMessage) {
@@ -976,17 +965,11 @@ app.post('/api/extract-and-save', async (req, res) => {
   }
 
   try {
-    const draft = await mod.extractFromUrl(url);
-
-    // AI filter assignment — best-effort; never fail the save over it.
-    try {
-      const filterRows = db.prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC').all();
-      const filterLabels = filterRows.map((r) => r.label);
-      draft.filters = await mod.assignFilters(draft, filterLabels);
-    } catch (assignErr) {
-      console.warn('[extract-and-save] assignFilters failed (continuing):', assignErr.message);
-      draft.filters = [];
-    }
+    const filterLabels = db
+      .prepare('SELECT label FROM filters ORDER BY position ASC, created_at ASC')
+      .all()
+      .map((r) => r.label);
+    const draft = await mod.extractFromUrl(url, filterLabels);
 
     const data = normalizeBody({ ...draft, source_url: url });
     if (!data.title) data.title = 'Imported recipe';

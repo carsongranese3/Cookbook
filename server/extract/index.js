@@ -69,11 +69,11 @@ export { assignFilters }        from './gemini.js';
  * @returns {Promise<DraftRecipe>}
  * @throws {import('./errors.js').ExtractError}
  */
-export async function extractFromUrl(url) {
+export async function extractFromUrl(url, filterLabels = []) {
   const { filePath, mimeType, caption, cleanup } = await downloadVideo(url);
 
   try {
-    const draft = await extractWithGemini(filePath, mimeType, caption);
+    const draft = await extractWithGemini(filePath, mimeType, caption, filterLabels);
     // AI-picked hero frame → recipe photo (best-effort; null falls back to a gradient).
     draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
     delete draft.heroSeconds;
@@ -98,8 +98,8 @@ export async function extractFromUrl(url) {
  * @returns {Promise<DraftRecipe>}
  * @throws {import('./errors.js').ExtractError}
  */
-export async function extractFromFile(filePath, mimeType) {
-  const draft = await extractWithGemini(filePath, mimeType, '');
+export async function extractFromFile(filePath, mimeType, filterLabels = []) {
+  const draft = await extractWithGemini(filePath, mimeType, '', filterLabels);
   draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
   delete draft.heroSeconds;
   return draft;

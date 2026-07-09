@@ -2183,26 +2183,42 @@ a:hover { color: var(--accent-dark); }
   min-height: 38px;
 }
 
-/* Ghost row shown in DragOverlay — slightly elevated look */
-.mf-row--overlay {
-  box-shadow: 0 4px 14px rgba(0,0,0,.14);
-  cursor: grabbing;
-  opacity: 1;
-}
-
-.mf-grip {
-  cursor: grab;
+/* Search row inside the modal body */
+.mf-search-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  border-radius: 4px;
-  transition: background 0.1s;
+  gap: 8px;
+  background: var(--fill);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: 0 10px;
+  height: 34px;
 }
 
-.mf-grip:hover { background: rgba(0,0,0,.06); }
+.mf-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font: 400 13px 'Onest';
+  color: var(--text);
+  outline: none;
+}
+
+.mf-search-input::placeholder { color: var(--muted); }
+
+.mf-search-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 4px;
+  transition: color 0.1s;
+}
+
+.mf-search-clear:hover { color: var(--text); }
 
 .mf-label {
   flex: 1;
