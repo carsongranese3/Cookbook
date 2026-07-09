@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import RecipeImage from '../components/RecipeImage.jsx';
 import { HeartIcon } from './Library.jsx';
 import { api } from '../api.js';
 import { shortDayName, formatDayDate } from '../utils/week.js';
+import { fileToDownscaledDataUrl } from '../utils/image.js';
 
 export default function RecipeDetail({
   recipe,
@@ -26,7 +27,93 @@ export default function RecipeDetail({
   const [assignMsg, setAssignMsg]               = useState('');
   const [localFilters, setLocalFilters]         = useState(null); // optimistic override
 
+  // Change photo modal
+  const [showPhotoModal, setShowPhotoModal]     = useState(false);
+  const [photoModalTab, setPhotoModalTab]       = useState('upload'); // 'upload' | 'frames'
+  const [framesLoading, setFramesLoading]       = useState(false);
+  const [frameCandidates, setFrameCandidates]   = useState(null); // null = not loaded yet
+  const [framesError, setFramesError]           = useState('');
+  const [savingPhoto, setSavingPhoto]           = useState(false);
+  const [photoMsg, setPhotoMsg]                 = useState('');
+  const photoFileRef                            = useRef(null);
+
   const today = new Date().toISOString().slice(0, 10);
+
+  async function handleFetchFrames() {
+    if (framesLoading) return;
+    setFramesLoading(true);
+    setFramesError('');
+    try {
+      const result = await api.recipeFrames(recipe.id);
+      setFrameCandidates(result?.candidates ?? []);
+    } catch (err) {
+      if (err.code === 'NO_SOURCE' || err.status === 422) {
+        setFramesError('This recipe has no source video. Upload a photo instead.');
+      } else if (err.status === 503) {
+        setFramesError('Video extraction is not configured on the server.');
+      } else if (err.code === 'FETCH_FAILED' || err.status === 502) {
+        setFramesError('Could not re-download the video (link may have expired). Upload a photo instead.');
+      } else if (err.code === 'TIMEOUT' || err.status === 504) {
+        setFramesError('Timed out fetching frames. Try again or upload a photo.');
+      } else {
+        setFramesError(err.message || 'Could not load video frames.');
+      }
+      setFrameCandidates([]);
+    } finally {
+      setFramesLoading(false);
+    }
+  }
+
+  async function handlePhotoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSavingPhoto(true);
+    setPhotoMsg('');
+    try {
+      const dataUrl = await fileToDownscaledDataUrl(file, 800);
+      const updated = await api.update(recipe.id, { ...recipe, image: dataUrl });
+      if (onRecipeChange) onRecipeChange(updated);
+      setPhotoMsg('Photo updated.');
+      setShowPhotoModal(false);
+    } catch (err) {
+      setPhotoMsg(err.message || 'Could not save photo.');
+    } finally {
+      setSavingPhoto(false);
+      if (photoFileRef.current) photoFileRef.current.value = '';
+      setTimeout(() => setPhotoMsg(''), 4000);
+    }
+  }
+
+  async function handleSelectFrame(uri) {
+    setSavingPhoto(true);
+    setPhotoMsg('');
+    try {
+      const updated = await api.update(recipe.id, { ...recipe, image: uri });
+      if (onRecipeChange) onRecipeChange(updated);
+      setPhotoMsg('Photo updated.');
+      setShowPhotoModal(false);
+    } catch (err) {
+      setPhotoMsg(err.message || 'Could not save photo.');
+    } finally {
+      setSavingPhoto(false);
+      setTimeout(() => setPhotoMsg(''), 4000);
+    }
+  }
+
+  function openPhotoModal() {
+    setShowPhotoModal(true);
+    setPhotoModalTab('upload');
+    setFramesError('');
+    setPhotoMsg('');
+    // Don't auto-fetch frames; wait for user to click "Pick from video frames"
+  }
+
+  function closePhotoModal() {
+    setShowPhotoModal(false);
+    setFrameCandidates(null);
+    setFramesError('');
+    setPhotoMsg('');
+  }
 
   async function handleAddToList() {
     setAddingToList(true);
@@ -125,6 +212,117 @@ export default function RecipeDetail({
 
   return (
     <>
+      {/* Change photo modal */}
+      {showPhotoModal && (
+        <div
+          className="modal-scrim"
+          onClick={closePhotoModal}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Change cover photo"
+        >
+          <div className="modal-box cp-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              Change cover photo
+              <button
+                className="modal-close-x"
+                onClick={closePhotoModal}
+                aria-label="Close"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+
+            {/* Tab row */}
+            <div className="cp-tabs">
+              <button
+                className={`cp-tab${photoModalTab === 'upload' ? ' active' : ''}`}
+                onClick={() => setPhotoModalTab('upload')}
+              >
+                Upload photo
+              </button>
+              {recipe.source_url && (
+                <button
+                  className={`cp-tab${photoModalTab === 'frames' ? ' active' : ''}`}
+                  onClick={() => {
+                    setPhotoModalTab('frames');
+                    if (frameCandidates === null && !framesLoading) handleFetchFrames();
+                  }}
+                >
+                  Pick from video
+                </button>
+              )}
+            </div>
+
+            <div className="modal-body">
+              {/* Upload tab */}
+              {photoModalTab === 'upload' && (
+                <div className="cp-upload-area">
+                  <label className="cp-upload-label" aria-label="Choose a photo to upload">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                      <rect x="3" y="3" width="18" height="18" rx="3"/>
+                      <circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                    <span>{savingPhoto ? 'Saving…' : 'Choose a photo'}</span>
+                    <input
+                      ref={photoFileRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePhotoUpload}
+                      disabled={savingPhoto}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  <p className="cp-upload-hint">JPEG, PNG, or WebP. Will be downscaled to 800 px.</p>
+                </div>
+              )}
+
+              {/* Frames tab */}
+              {photoModalTab === 'frames' && (
+                <div className="cp-frames-area">
+                  {framesLoading && (
+                    <div className="cp-frames-loading">
+                      <div className="spinner" role="status" aria-label="Loading frames" />
+                      <span>Fetching video frames…</span>
+                    </div>
+                  )}
+                  {!framesLoading && framesError && (
+                    <p className="cp-frames-error">{framesError}</p>
+                  )}
+                  {!framesLoading && !framesError && frameCandidates !== null && frameCandidates.length === 0 && (
+                    <p className="cp-frames-empty">No frames could be extracted from this video.</p>
+                  )}
+                  {!framesLoading && !framesError && frameCandidates && frameCandidates.length > 0 && (
+                    <div className="cp-frames-grid">
+                      {frameCandidates.map((uri, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          className={`cp-frame-btn${uri === recipe.image ? ' selected' : ''}`}
+                          onClick={() => handleSelectFrame(uri)}
+                          disabled={savingPhoto}
+                          aria-label={`Use frame ${i + 1}`}
+                        >
+                          <img src={uri} alt={`Frame ${i + 1}`} />
+                          {savingPhoto && <span className="cp-frame-saving-overlay"><span className="spinner spinner-sm" /></span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {photoMsg && (
+                <p className="cp-photo-msg">{photoMsg}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Confirm delete */}
       {showConfirm && (
         <div className="confirm-overlay" role="alertdialog" aria-modal="true">
@@ -190,6 +388,18 @@ export default function RecipeDetail({
 
         <div className="detail-hero">
           <RecipeImage image={image} title={title} style={{ width: '100%', height: '100%' }} />
+          <button
+            className="detail-change-photo-btn"
+            onClick={openPhotoModal}
+            aria-label="Change cover photo"
+            title="Change cover photo"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            Change photo
+          </button>
         </div>
 
         <div className="detail-main">
@@ -382,6 +592,16 @@ export default function RecipeDetail({
             aria-label={favorite ? 'Remove from saved' : 'Save recipe'}
           >
             <HeartIcon filled={favorite} size={17} />
+          </button>
+          <button
+            className="ph-hero-camera"
+            onClick={openPhotoModal}
+            aria-label="Change cover photo"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#111" strokeWidth="2" aria-hidden="true">
+              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
           </button>
         </div>
 

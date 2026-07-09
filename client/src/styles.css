@@ -205,21 +205,29 @@ a:hover { color: var(--accent-dark); }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   cursor: pointer;
   border: none;
   background: none;
-  padding: 6px 2px 2px;
+  padding: 5px 1px 2px;
   color: var(--muted);
-  font: 500 9.5px 'Onest';
+  font: 500 8.5px 'Onest';
   transition: color 0.12s;
   min-width: 0;
+  overflow: hidden;
 }
 
 .tab-item svg {
   flex-shrink: 0;
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
+}
+
+.tab-item span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .tab-item.active {
@@ -2829,4 +2837,450 @@ a:hover { color: var(--accent-dark); }
   padding: 0;
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* ── Shopping List — Move to Pantry additions ───────────────────────────── */
+.shop-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.shop-action-btn {
+  height: 34px;
+  font-size: 12px;
+  padding: 0 14px;
+}
+
+.shop-pantry-msg {
+  font: 400 12px 'Onest';
+  color: var(--secondary);
+  margin: 6px 0 0;
+}
+
+/* ── Pantry Screen ──────────────────────────────────────────────────────── */
+.pantry-list {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Category section */
+.pantry-section-header {
+  font: 600 11px 'Onest';
+  color: var(--label);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 2px;
+}
+
+.pantry-section-items {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Item row */
+.pantry-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--border-light);
+  min-height: 42px;
+}
+
+.pantry-row:last-child {
+  border-bottom: none;
+}
+
+.pantry-row-name {
+  flex: 1;
+  font: 500 14px 'Onest';
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pantry-row-qty {
+  font: 400 12px 'Onest';
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pantry-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* "Running low" button */
+.pantry-low-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border);
+  background: var(--fill);
+  font: 500 11px 'Onest';
+  color: var(--secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.pantry-low-btn:hover:not(:disabled) {
+  background: #fff3e8;
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.pantry-low-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Confirmation message after "Running low" */
+.pantry-low-msg {
+  font: 400 11px 'Onest';
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+/* Add/Edit form modal */
+.pantry-form-modal {
+  width: 420px;
+}
+
+@media (max-width: 767px) {
+  .pantry-form-modal {
+    width: 100%;
+  }
+}
+
+/* ── Draft cover-photo thumbnail strip (AddFromVideo) ───────────────────── */
+.draft-thumb-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 20px;
+  background: #f6f5f1;
+  border-top: 1px solid var(--border-light);
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+.draft-thumb-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.draft-thumb {
+  flex-shrink: 0;
+  width: 72px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2.5px solid transparent;
+  cursor: pointer;
+  background: var(--fill);
+  padding: 0;
+  scroll-snap-align: start;
+  transition: border-color 0.12s, box-shadow 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.draft-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 6px;
+}
+
+.draft-thumb.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.draft-thumb:hover:not(.selected) {
+  border-color: #ccc9c3;
+}
+
+/* "Upload your own" tile */
+.draft-thumb-upload {
+  flex-direction: column;
+  gap: 3px;
+  color: var(--secondary);
+  border-style: dashed;
+  border-color: var(--border);
+  cursor: pointer;
+  font: normal normal normal normal normal;
+  /* override button reset */
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.draft-thumb-upload.uploading {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.draft-thumb-upload:hover:not(.uploading) {
+  background: #eceae4;
+  border-color: #c4bfb6;
+  color: var(--text);
+}
+
+.draft-thumb-upload-label {
+  font: 500 9px 'Onest';
+  color: inherit;
+  pointer-events: none;
+}
+
+/* ── RecipeDetail: "Change photo" button on hero ────────────────────────── */
+.detail-hero {
+  position: relative;
+}
+
+.detail-change-photo-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-btn);
+  border: none;
+  background: rgba(255, 255, 255, 0.92);
+  font: 500 11px 'Onest';
+  color: var(--text);
+  cursor: pointer;
+  z-index: 2;
+  transition: background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.detail-change-photo-btn:hover {
+  background: rgba(255, 255, 255, 1);
+}
+
+/* Phone hero camera button */
+.ph-hero-camera {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  z-index: 2;
+  transition: background 0.12s;
+}
+
+.ph-hero-camera:hover {
+  background: #fff;
+}
+
+/* ── Change photo modal ─────────────────────────────────────────────────── */
+.cp-modal {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+}
+
+/* Tab bar */
+.cp-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-light);
+  padding: 0 24px;
+}
+
+.cp-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font: 500 13px 'Onest';
+  color: var(--secondary);
+  padding: 10px 14px;
+  margin-bottom: -1px;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.cp-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.cp-tab:hover:not(.active) {
+  color: var(--text);
+}
+
+/* Upload area */
+.cp-upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 0 8px;
+}
+
+.cp-upload-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 160px;
+  height: 120px;
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--secondary);
+  justify-content: center;
+  font: 500 13px 'Onest';
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.cp-upload-label:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #fdf6f3;
+}
+
+.cp-upload-hint {
+  font: 400 11px 'Onest';
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Frames area */
+.cp-frames-area {
+  padding: 16px 0 8px;
+}
+
+.cp-frames-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 0;
+  font: 400 13px 'Onest';
+  color: var(--secondary);
+}
+
+.cp-frames-error,
+.cp-frames-empty {
+  font: 400 13px 'Onest';
+  color: var(--secondary);
+  padding: 12px 0;
+  margin: 0;
+}
+
+.cp-frames-error {
+  color: var(--danger);
+}
+
+.cp-frames-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.cp-frame-btn {
+  position: relative;
+  padding: 0;
+  border: 2.5px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--fill);
+  aspect-ratio: 16/9;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.cp-frame-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cp-frame-btn.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.cp-frame-btn:hover:not(.selected):not(:disabled) {
+  border-color: #ccc9c3;
+}
+
+.cp-frame-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.cp-frame-saving-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Status message inside modal */
+.cp-photo-msg {
+  font: 400 12px 'Onest';
+  color: var(--secondary);
+  margin: 12px 0 0;
+  text-align: center;
+}
+
+/* Close X button in modal header */
+.modal-close-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--secondary);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.modal-close-x:hover {
+  background: var(--fill);
+  color: var(--text);
+}
+
+.cp-modal .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+@media (max-width: 767px) {
+  .cp-frames-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }

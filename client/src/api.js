@@ -52,7 +52,17 @@ export const api = {
     update: (id, fields) =>
       request(`/shopping-list/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
     remove: (id) => request(`/shopping-list/${id}`, { method: 'DELETE' }),
-    clearChecked: () => request('/shopping-list/clear-checked', { method: 'POST' }),
+    clearChecked:  () => request('/shopping-list/clear-checked', { method: 'POST' }),
+    moveToPantry:  () => request('/shopping-list/move-to-pantry', { method: 'POST' }),
+  },
+
+  // Pantry
+  pantry: {
+    list:       ()         => request('/pantry'),
+    create:     (body)     => request('/pantry', { method: 'POST', body: JSON.stringify(body) }),
+    update:     (id, body) => request(`/pantry/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove:     (id)       => request(`/pantry/${id}`, { method: 'DELETE' }),
+    toShopping: (id)       => request(`/pantry/${id}/to-shopping`, { method: 'POST' }),
   },
 
   // Filters (user-defined)
@@ -75,6 +85,9 @@ export const api = {
   // Per-recipe AI filter assignment
   assignFilters: (id) => request(`/recipes/${id}/assign-filters`, { method: 'POST' }),
   assignAll:     ()   => request('/recipes/assign-all', { method: 'POST' }),
+
+  // Video frame picker — returns { candidates: string[] } of JPEG data URIs
+  recipeFrames: (id) => request(`/recipes/${id}/frames`, { method: 'POST' }),
 
   // AI Extract
   extract: {

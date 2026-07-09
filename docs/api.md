@@ -17,8 +17,9 @@ CORS: open (single-user private deployment)
 4. [Meal Plan](#4-meal-plan)
 5. [Shopping List](#5-shopping-list)
 6. [History](#6-history)
-7. [AI Extract](#7-ai-extract)
-8. [Common error shape](#8-common-error-shape)
+7. [Pantry](#7-pantry)
+8. [AI Extract](#8-ai-extract)
+9. [Common error shape](#9-common-error-shape)
 
 ---
 
@@ -218,6 +219,46 @@ If `GEMINI_API_KEY` is not set, returns 503 immediately.
 `updated` — count of recipes whose `filters` were updated (failed recipes are not counted).
 
 **Response 503** — `GEMINI_API_KEY` not set or extract module unavailable.
+
+---
+
+### `POST /api/recipes/:id/frames`
+
+Re-download the recipe's source video and return multiple candidate JPEG frames so the user can choose a new cover photo. **No AI call** — ffmpeg only.
+
+**Path param:** `id` — recipe UUID.
+
+**Request body:** none.
+
+**Response 200**
+```json
+{
+  "candidates": [
+    "data:image/jpeg;base64,...",
+    "data:image/jpeg;base64,...",
+    "data:image/jpeg;base64,..."
+  ]
+}
+```
+
+`candidates` — ordered array of JPEG data URIs (≤6), best-guess first (end-weighted toward the plated dish). May be an empty array if the video cannot be decoded, but the response is still 200.
+
+The chosen frame is persisted later by the client via `PUT /api/recipes/:id` with the `image` field set to the selected data URI. The non-chosen candidates are transient and discarded by the client.
+
+**Response 404** — `{ "error": "Recipe not found" }`
+
+**Response 422**
+```json
+{ "error": "This recipe has no source video to grab frames from. Upload a photo instead.", "code": "NO_SOURCE" }
+```
+Returned when the recipe has no `source_url` (manually-entered recipes, or imports where the URL was not saved).
+
+**Response 503** — extract module not available (`EXTRACT_UNAVAILABLE`).
+
+**Error responses** for yt-dlp failures follow the extract error shape (see §8 error table). Common codes:
+- `FETCH_FAILED` (502) — yt-dlp could not re-download the video (link expired, private, etc.).
+- `UNSUPPORTED_URL` (400) — the stored `source_url` is not an IG/TikTok link.
+- `TIMEOUT` (504) — download timed out.
 
 ---
 
@@ -677,32 +718,217 @@ Remove a single history entry. Does not affect the linked recipe.
 
 ---
 
-## 7. AI Extract
+## 7. Pantry
+
+An inventory of ingredients the user has at home. Items are grouped by a fixed ordered set of categories. The frontend receives a flat array and groups by `category` client-side.
+
+### Fixed category list (in display order)
+
+```
+Produce
+Dairy & Eggs
+Meat & Seafood
+Bakery
+Frozen
+Pantry staples
+Beverages
+Condiments & Spices
+Other
+```
+
+Any `category` sent to the API is matched case-insensitively against this list. Unrecognised values are coerced to `'Other'`.
+
+### Pantry item object
+
+```json
+{
+  "id":         "uuid string",
+  "name":       "string",
+  "qty":        "2 lb",
+  "category":   "Meat & Seafood",
+  "position":   0,
+  "created_at": "2026-07-09T10:00:00.000Z",
+  "updated_at": "2026-07-09T10:00:00.000Z"
+}
+```
+
+Field notes:
+- `qty` — free-text quantity string; defaults to `""`.
+- `category` — one of the fixed set above; coerced on write.
+- `position` — integer; used for ordering within a category (ascending). Auto-assigned on create as max+1 within the category.
+
+---
+
+### `GET /api/pantry`
+
+Return all pantry items as a flat array, ordered by category (fixed order above), then `position ASC`, then `name ASC`. The frontend groups by `category`.
+
+**Response 200** — array of pantry item objects.
+
+```json
+[{ ...pantryItem }, ...]
+```
+
+---
+
+### `POST /api/pantry`
+
+Add one item to the pantry.
+
+**Request body:**
+```json
+{
+  "name":     "string (required)",
+  "qty":      "string (optional, default empty string)",
+  "category": "string (optional, coerced to allowed set, default 'Other')"
+}
+```
+
+**Response 201** — the created pantry item object.
+
+**Response 400** — `{ "error": "name is required" }` (empty or missing name).
+
+---
+
+### `PATCH /api/pantry/:id`
+
+Partial update of `name`, `qty`, and/or `category`. Only fields present in the body are changed. `category` is coerced to the allowed set if supplied.
+
+**Path param:** `id` — pantry item UUID.
+
+**Request body** (all fields optional):
+```json
+{
+  "name":     "string",
+  "qty":      "string",
+  "category": "string"
+}
+```
+
+**Response 200** — updated pantry item object.
+
+**Response 404** — `{ "error": "Pantry item not found" }`
+
+---
+
+### `DELETE /api/pantry/:id`
+
+Remove one pantry item.
+
+**Path param:** `id` — pantry item UUID.
+
+**Response 204** — no body.
+
+**Response 404** — `{ "error": "Pantry item not found" }`
+
+---
+
+### `POST /api/shopping-list/move-to-pantry`
+
+Move all **checked** shopping-list items into the pantry in one operation.
+
+- Each checked item is auto-categorized by a server-side keyword guesser (`guessCategory`) — see below.
+- De-duped by case-insensitive `name`: if a pantry item with that name already exists, the item is **skipped** (not duplicated) but is still **removed** from the shopping list.
+- All checked items (whether added or skipped) are deleted from `shopping_list`.
+
+**Request body:** none.
+
+**Response 200**
+```json
+{
+  "moved":   [{ ...pantryItem }, ...],
+  "skipped": 1
+}
+```
+
+`moved` — array of pantry items that were newly created.
+`skipped` — count of checked shopping items whose name already existed in the pantry (they were removed from the shopping list but not re-added to the pantry).
+
+If there are no checked items, returns `{ "moved": [], "skipped": 0 }`.
+
+#### `guessCategory` — how auto-categorization works
+
+The server matches keywords in the lowercased item name using regex, checking more-specific categories first:
+
+| Category | Keywords matched |
+|---|---|
+| Dairy & Eggs | milk, cheese, egg, butter, yogurt, cream, parmesan, mozzarella |
+| Meat & Seafood | chicken, beef, steak, pork, bacon, sausage, turkey, lamb, fish, salmon, tuna, shrimp, prawn, meat |
+| Produce | lettuce, tomato, onion, garlic, potato, carrot, pepper, apple, banana, lemon, lime, spinach, broccoli, avocado, cucumber, herb, cilantro, mushroom, berry, fruit, vegetable |
+| Bakery | bread, bun, bagel, roll, tortilla, naan, pita, croissant |
+| Frozen | frozen, ice cream, popsicle |
+| Condiments & Spices | salt, sauce, ketchup, mustard, mayo, vinegar, spice, soy sauce, sriracha, honey, syrup, seasoning, oil (word-boundary) |
+| Pantry staples | flour, sugar, rice, pasta, noodle, bean, lentil, oat, cereal, stock, broth, can (word-boundary), canned, baking, cornstarch, quinoa |
+| Beverages | juice, soda, water, coffee, tea, wine, beer, drink |
+| Other | (fallback — no keywords matched) |
+
+Dairy & Eggs is checked before Beverages so "milk" is not mis-filed as a beverage.
+The user can always recategorize via `PATCH /api/pantry/:id`.
+
+---
+
+### `POST /api/pantry/:id/to-shopping`
+
+"Running low" — add this pantry item to the shopping list. The pantry item is **not** removed.
+
+De-duped by case-insensitive name (same logic as `POST /api/shopping-list/from-recipe/:id`): if an item with this name is already on the shopping list, the call is a no-op.
+
+**Path param:** `id` — pantry item UUID.
+
+**Request body:** none.
+
+**Response 201** — the created shopping list item (when added):
+```json
+{
+  "id":       "uuid string",
+  "name":     "string",
+  "qty":      "string",
+  "checked":  false,
+  "position": 5
+}
+```
+
+**Response 200** — when already on the shopping list (skipped):
+```json
+{ "added": null, "skipped": true }
+```
+
+**Response 404** — `{ "error": "Pantry item not found" }`
+
+---
+
+## 8. AI Extract
 
 Runs server-side only. The Gemini API key is never exposed to the browser.
 Both endpoints return a **draft recipe JSON** that is **not persisted** — the frontend displays it as an editable draft, and a separate `POST /api/recipes` call saves it.
 
 ### Draft recipe object
 
-Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time). The `filters` field **is** present — it is populated by AI assignment using the user's current filter list at extraction time:
+Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time). The `filters` field **is** present — it is populated by AI assignment using the user's current filter list at extraction time. Two additional frame-picker fields are included:
 
 ```json
 {
-  "title":       "string",
-  "description": "string",
-  "cuisine":     "string",
-  "category":    "string",
-  "minutes":     25,
-  "servings":    4,
-  "image":       "data:image/jpeg;base64,... or null",
-  "ingredients": [{ "name": "string", "qty": "string (imperial)" }],
-  "steps":       ["string"],
-  "tags":        [],
-  "filters":     ["Chicken", "Quick"]
+  "title":           "string",
+  "description":     "string",
+  "cuisine":         "string",
+  "category":        "string",
+  "minutes":         25,
+  "servings":        4,
+  "image":           "data:image/jpeg;base64,... or null",
+  "imageCandidates": ["data:image/jpeg;base64,...", "data:image/jpeg;base64,..."],
+  "ingredients":     [{ "name": "string", "qty": "string (imperial)" }],
+  "steps":           ["string"],
+  "tags":            [],
+  "filters":         ["Chicken", "Quick"]
 }
 ```
 
 All measurements are imperial (weights oz/lb, volumes cups/tbsp/tsp/fl oz, temps °F).
+
+Field notes for the frame fields:
+- `imageCandidates` — ordered array of JPEG data URIs (≤6), best-guess first. Extracted with ffmpeg (no AI call). Empty array `[]` if no frames could be grabbed.
+- `image` — equals `imageCandidates[0]` when candidates is non-empty; `null` otherwise.
+- Both fields are **transient** — only the single chosen frame is persisted to the recipe via `PUT /api/recipes/:id` (`image` field).
 
 ### Extract error object
 
@@ -769,7 +995,7 @@ The server saves the upload to a temp file, calls Gemini, then deletes the temp 
 
 ---
 
-## 8. Common error shape
+## 9. Common error shape
 
 All error responses follow:
 ```json

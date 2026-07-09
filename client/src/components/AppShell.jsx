@@ -40,6 +40,18 @@ const NAV_ITEMS = [
     ),
   },
   {
+    id: 'pantry',
+    label: 'Pantry',
+    tabLabel: 'Pantry',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M5 3h14a1 1 0 011 1v16a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/>
+        <path d="M8 3v4M16 3v4M4 7h16"/>
+        <path d="M9 13h6M9 17h4"/>
+      </svg>
+    ),
+  },
+  {
     id: 'add',
     label: 'Add from Video',
     tabLabel: 'Add',
@@ -53,7 +65,7 @@ const NAV_ITEMS = [
   {
     id: 'history',
     label: 'History',
-    tabLabel: 'History',
+    tabLabel: 'Log',
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
         <polyline points="12 8 12 12 14 14"/>
@@ -63,8 +75,8 @@ const NAV_ITEMS = [
   },
 ];
 
-// Phone tab order: Home, Plan, Add, List, History (5 tabs, flex:1 each)
-const PHONE_ORDER = ['library', 'plan', 'add', 'shopping', 'history'];
+// Phone tab order: 6 tabs — Home, Plan, Add, List, Pantry, Log
+const PHONE_ORDER = ['library', 'plan', 'add', 'shopping', 'pantry', 'history'];
 
 export default function AppShell({ activeTab, onNav, recipeCount, children }) {
   return (
@@ -83,7 +95,7 @@ export default function AppShell({ activeTab, onNav, recipeCount, children }) {
               <path d="M4 11v10M20 11v10"/>
             </svg>
           </div>
-          <span className="sidebar-wordmark">Pantry</span>
+          <span className="sidebar-wordmark">The Cookbook</span>
         </a>
 
         <nav className="sidebar-nav">
@@ -103,7 +115,7 @@ export default function AppShell({ activeTab, onNav, recipeCount, children }) {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="sidebar-avatar" aria-hidden="true">P</div>
+          <div className="sidebar-avatar" aria-hidden="true">C</div>
           <div className="sidebar-footer-text">
             <div className="name">My Kitchen</div>
             <div className="count">{recipeCount} recipe{recipeCount !== 1 ? 's' : ''}</div>

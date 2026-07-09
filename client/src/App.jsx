@@ -8,13 +8,14 @@ import MealPlan from './screens/MealPlan.jsx';
 import ShoppingList from './screens/ShoppingList.jsx';
 import CookingMode from './screens/CookingMode.jsx';
 import HistoryScreen from './screens/HistoryScreen.jsx';
+import PantryScreen from './screens/PantryScreen.jsx';
 import { api } from './api.js';
 import { getCurrentWeekDates, todayISO } from './utils/week.js';
 
 /**
  * View state machine:
- *   tab:     which sidebar/bottom-tab section is selected
- *   view:    sub-view within that tab (e.g. 'list' | 'detail' | 'form' | 'cooking')
+ *   tab:     library | plan | shopping | pantry | add | history
+ *   view:    list | detail | form | cooking
  *   activeId: recipe id in context
  */
 export default function App() {
@@ -240,6 +241,10 @@ export default function App() {
             onStartCooking={openCooking}
             weekDays={weekDays}
             onAddToPlan={handleAddToPlan}
+            onRecipeChange={(updated) => {
+              setDR(updated);
+              setRecipes((prev) => prev.map((r) => r.id === updated.id ? updated : r));
+            }}
           />
         )}
 
@@ -315,6 +320,11 @@ export default function App() {
               </button>
             </div>
           </>
+        )}
+
+        {/* ── Pantry ── */}
+        {tab === 'pantry' && view === 'list' && (
+          <PantryScreen isOffline={isOffline} />
         )}
 
         {/* ── History ── */}

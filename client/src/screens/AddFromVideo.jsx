@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
+import { fileToDownscaledDataUrl } from '../utils/image.js';
 
 const STATUS_MESSAGES = [
   'Transcribing narration & captions',
@@ -297,6 +298,33 @@ function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateSte
     () => new Set([...aiSuggested])
   );
 
+  // Cover photo: candidates from AI draft (imageCandidates) + selected index
+  const candidates = Array.isArray(draft.imageCandidates) ? draft.imageCandidates : [];
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const coverFileRef = useRef(null);
+
+  // Currently selected image — driven by draft.image (updated via onUpdateField)
+  const selectedImage = draft.image ?? null;
+
+  function selectCandidate(dataUri) {
+    onUpdateField('image', dataUri);
+  }
+
+  async function handleCoverUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingCover(true);
+    try {
+      const dataUrl = await fileToDownscaledDataUrl(file, 800);
+      onUpdateField('image', dataUrl);
+    } catch {
+      // keep existing image on error
+    } finally {
+      setUploadingCover(false);
+      if (coverFileRef.current) coverFileRef.current.value = '';
+    }
+  }
+
   function toggleFilter(label) {
     setCheckedFilters((prev) => {
       const next = new Set(prev);
@@ -310,11 +338,52 @@ function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateSte
     <div className="draft-card">
       <div className="draft-hero">
         <RecipeImage
-          image={draft.image}
+          image={selectedImage}
           title={draft.title}
           style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}
         />
         <div className="draft-badge">AI draft</div>
+      </div>
+
+      {/* Cover photo thumbnail strip — always visible; shows upload tile even when no candidates */}
+      <div className="draft-thumb-strip" aria-label="Choose cover photo">
+          {candidates.map((uri, i) => (
+            <button
+              key={i}
+              type="button"
+              className={`draft-thumb${uri === selectedImage ? ' selected' : ''}`}
+              onClick={() => selectCandidate(uri)}
+              aria-label={`Frame ${i + 1}`}
+              aria-pressed={uri === selectedImage}
+            >
+              <img src={uri} alt={`Frame ${i + 1}`} />
+            </button>
+          ))}
+          {/* Upload your own tile */}
+          <label
+            className={`draft-thumb draft-thumb-upload${uploadingCover ? ' uploading' : ''}`}
+            title="Upload your own photo"
+            aria-label="Upload your own cover photo"
+          >
+            {uploadingCover ? (
+              <span className="spinner spinner-sm" role="status" aria-label="Uploading" />
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            )}
+            <span className="draft-thumb-upload-label">Upload</span>
+            <input
+              ref={coverFileRef}
+              type="file"
+              accept="image/*"
+              onChange={handleCoverUpload}
+              disabled={uploadingCover}
+              style={{ display: 'none' }}
+            />
+          </label>
       </div>
       <div className="draft-body">
         <input

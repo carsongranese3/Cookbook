@@ -29,11 +29,12 @@
  * @module server/extract
  */
 
-import { downloadVideo }        from './ytdlp.js';
-import { extractWithGemini }    from './gemini.js';
-import { pickHeroFrameDataUri } from './frame.js';
-export { ExtractError, CODES } from './errors.js';
-export { assignFilters }        from './gemini.js';
+import { downloadVideo }                                          from './ytdlp.js';
+import { extractWithGemini }                                     from './gemini.js';
+import { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
+export { ExtractError, CODES }                                   from './errors.js';
+export { assignFilters }                                         from './gemini.js';
+export { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
 
 // ---------------------------------------------------------------------------
 // JSDoc type (informational — this is plain JS, no TypeScript compiler)
@@ -49,13 +50,17 @@ export { assignFilters }        from './gemini.js';
  * @typedef {Object} DraftRecipe
  * @property {string}           title
  * @property {string}           description
- * @property {number}           minutes     Integer total time; 0 if unknown.
- * @property {number}           servings    Integer; 0 if unknown.
- * @property {string}           cuisine     e.g. "Italian"; empty string if unknown.
- * @property {string}           category    e.g. "Dinner", "Breakfast", "Dessert"; empty if unknown.
- * @property {IngredientItem[]} ingredients Normalized, imperial units.
- * @property {string[]}         steps       Ordered imperative step text.
- * @property {string|null}      image       AI-picked hero frame as a JPEG data URI, or null.
+ * @property {number}           minutes          Integer total time; 0 if unknown.
+ * @property {number}           servings         Integer; 0 if unknown.
+ * @property {string}           cuisine          e.g. "Italian"; empty string if unknown.
+ * @property {string}           category         e.g. "Dinner", "Breakfast", "Dessert"; empty if unknown.
+ * @property {IngredientItem[]} ingredients      Normalized, imperial units.
+ * @property {string[]}         steps            Ordered imperative step text.
+ * @property {string|null}      image            Best-guess candidate frame as a JPEG data URI, or null
+ *                                               (equals imageCandidates[0] when candidates is non-empty).
+ * @property {string[]}         imageCandidates  Ordered array of JPEG data URI candidate frames (≤6),
+ *                                               best-guess first. Transient — not persisted to DB.
+ *                                               Empty array when no frames could be extracted.
  */
 
 // ---------------------------------------------------------------------------
@@ -74,8 +79,10 @@ export async function extractFromUrl(url, filterLabels = []) {
 
   try {
     const draft = await extractWithGemini(filePath, mimeType, caption, filterLabels);
-    // AI-picked hero frame → recipe photo (best-effort; null falls back to a gradient).
-    draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
+    // Grab multiple candidate frames so the user can choose the best cover photo.
+    const candidates = await extractCandidateFrames(filePath, draft.heroSeconds);
+    draft.imageCandidates = candidates;
+    draft.image = candidates[0] ?? null;
     delete draft.heroSeconds;
     return draft;
   } finally {
@@ -100,7 +107,10 @@ export async function extractFromUrl(url, filterLabels = []) {
  */
 export async function extractFromFile(filePath, mimeType, filterLabels = []) {
   const draft = await extractWithGemini(filePath, mimeType, '', filterLabels);
-  draft.image = await pickHeroFrameDataUri(filePath, draft.heroSeconds);
+  // Grab multiple candidate frames so the user can choose the best cover photo.
+  const candidates = await extractCandidateFrames(filePath, draft.heroSeconds);
+  draft.imageCandidates = candidates;
+  draft.image = candidates[0] ?? null;
   delete draft.heroSeconds;
   return draft;
 }

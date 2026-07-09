@@ -506,6 +506,46 @@ app.post('/api/recipes/assign-all', async (req, res) => {
   res.json({ updated });
 });
 
+// POST /api/recipes/:id/frames — re-download a recipe's source video and return
+// candidate JPEG frames so the user can choose a new cover photo.
+// No AI call — ffmpeg only. Requires the recipe to have a source_url.
+app.post('/api/recipes/:id/frames', async (req, res) => {
+  const row = db
+    .prepare('SELECT id, source_url FROM recipes WHERE id = ?')
+    .get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Recipe not found' });
+
+  if (!row.source_url) {
+    return res.status(422).json({
+      error: 'This recipe has no source video to grab frames from. Upload a photo instead.',
+      code: 'NO_SOURCE',
+    });
+  }
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+
+  try {
+    const candidates = await mod.getCandidateFramesFromUrl(row.source_url);
+    res.json({ candidates });
+  } catch (err) {
+    if (err.code && err.userMessage) {
+      console.warn(`[frames] ${err.code}: ${err.message}`);
+      return res.status(extractCodeToStatus(err.code)).json({
+        error: err.userMessage,
+        code: err.code,
+      });
+    }
+    console.error('[frames] Unexpected error:', err);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+  }
+});
+
 // POST /api/recipes/:id/assign-filters — AI-assign filters for a single recipe.
 app.post('/api/recipes/:id/assign-filters', async (req, res) => {
   const recipeRow = db
@@ -1087,6 +1127,299 @@ app.delete('/api/history/:id', (req, res) => {
 });
 
 // ===========================================================================
+// Pantry
+// ===========================================================================
+
+/**
+ * Fixed ordered category list for the Pantry.
+ * Any incoming category is coerced (case-insensitive) to one of these, or
+ * falls back to 'Other'.
+ */
+const PANTRY_CATEGORIES = [
+  'Produce',
+  'Dairy & Eggs',
+  'Meat & Seafood',
+  'Bakery',
+  'Frozen',
+  'Pantry staples',
+  'Beverages',
+  'Condiments & Spices',
+  'Other',
+];
+
+/**
+ * Coerce an incoming category string to one of PANTRY_CATEGORIES.
+ * Case-insensitive match; falls back to 'Other'.
+ */
+function coerceCategory(raw) {
+  const lower = String(raw ?? '').trim().toLowerCase();
+  const match = PANTRY_CATEGORIES.find((c) => c.toLowerCase() === lower);
+  return match ?? 'Other';
+}
+
+/**
+ * Guess a pantry category from an ingredient name by matching keywords in the
+ * lowercased name. More-specific categories are checked before generic ones.
+ * Returns one of PANTRY_CATEGORIES; falls back to 'Other'.
+ */
+function guessCategory(name) {
+  const n = String(name ?? '').toLowerCase();
+
+  // Dairy & Eggs — check before Beverages (milk belongs here, not Beverages)
+  if (/milk|cheese|egg|butter|yogurt|cream|parmesan|mozzarella/.test(n)) {
+    return 'Dairy & Eggs';
+  }
+
+  // Meat & Seafood
+  if (/chicken|beef|steak|pork|bacon|sausage|turkey|lamb|fish|salmon|tuna|shrimp|prawn|meat/.test(n)) {
+    return 'Meat & Seafood';
+  }
+
+  // Produce
+  if (/lettuce|tomato|onion|garlic|potato|carrot|pepper|apple|banana|lemon|lime|spinach|broccoli|avocado|cucumber|herb|cilantro|mushroom|berry|fruit|vegetable/.test(n)) {
+    return 'Produce';
+  }
+
+  // Bakery
+  if (/bread|bun|bagel|roll|tortilla|naan|pita|croissant/.test(n)) {
+    return 'Bakery';
+  }
+
+  // Frozen — keyword "frozen" or specific frozen goods
+  if (/frozen|ice cream|popsicle/.test(n)) {
+    return 'Frozen';
+  }
+
+  // Condiments & Spices — before Pantry staples so "salt" doesn't fall through
+  if (/salt|sauce|ketchup|mustard|mayo|vinegar|spice|soy sauce|sriracha|honey|syrup|seasoning/.test(n)) {
+    return 'Condiments & Spices';
+  }
+  // "oil" and "pepper" (as a spice) also land here but "pepper" (vegetable) was
+  // already matched above under Produce, so no conflict.
+  if (/\boil\b/.test(n)) {
+    return 'Condiments & Spices';
+  }
+
+  // Pantry staples
+  if (/flour|sugar|rice|pasta|noodle|bean|lentil|oat|cereal|stock|broth|\bcan\b|canned|baking|cornstarch|quinoa/.test(n)) {
+    return 'Pantry staples';
+  }
+
+  // Beverages
+  if (/juice|soda|water|coffee|tea|wine|beer|drink/.test(n)) {
+    return 'Beverages';
+  }
+
+  return 'Other';
+}
+
+/** Turn a DB pantry row into the API shape. */
+function rowToPantryItem(row) {
+  return {
+    id:         row.id,
+    name:       row.name,
+    qty:        row.qty ?? '',
+    category:   row.category,
+    position:   row.position,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+/**
+ * Sort key for the fixed category order. Returns the index in PANTRY_CATEGORIES,
+ * or PANTRY_CATEGORIES.length (last) for any unrecognised value.
+ */
+function categoryOrder(cat) {
+  const idx = PANTRY_CATEGORIES.indexOf(cat);
+  return idx === -1 ? PANTRY_CATEGORIES.length : idx;
+}
+
+// GET /api/pantry — all items ordered by fixed category order, then position ASC, name ASC.
+app.get('/api/pantry', (_req, res) => {
+  // Fetch all rows; sort in JS because SQLite CASE ordering is verbose and the
+  // list is small (personal pantry — hundreds of items at most).
+  const rows = db
+    .prepare('SELECT * FROM pantry ORDER BY position ASC, name ASC')
+    .all();
+
+  rows.sort((a, b) => {
+    const catDiff = categoryOrder(a.category) - categoryOrder(b.category);
+    if (catDiff !== 0) return catDiff;
+    if (a.position !== b.position) return a.position - b.position;
+    return a.name.localeCompare(b.name);
+  });
+
+  res.json(rows.map(rowToPantryItem));
+});
+
+// POST /api/pantry — add one pantry item.
+app.post('/api/pantry', (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  const qty      = String(req.body?.qty ?? '').trim();
+  const category = coerceCategory(req.body?.category);
+
+  // position = max existing position within this category + 1 (or 0).
+  const maxPos = db
+    .prepare(
+      'SELECT COALESCE(MAX(position), -1) as mp FROM pantry WHERE category = ?'
+    )
+    .get(category);
+  const position = (maxPos?.mp ?? -1) + 1;
+
+  const id  = randomUUID();
+  const now = new Date().toISOString();
+
+  db.prepare(
+    'INSERT INTO pantry (id, name, qty, category, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, name, qty, category, position, now, now);
+
+  const row = db.prepare('SELECT * FROM pantry WHERE id = ?').get(id);
+  res.status(201).json(rowToPantryItem(row));
+});
+
+// PATCH /api/pantry/:id — partial update of name, qty, category.
+app.patch('/api/pantry/:id', (req, res) => {
+  const existing = db
+    .prepare('SELECT * FROM pantry WHERE id = ?')
+    .get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Pantry item not found' });
+
+  const body = req.body ?? {};
+  const now  = new Date().toISOString();
+
+  const newName     = 'name'     in body ? String(body.name ?? '').trim() || existing.name : existing.name;
+  const newQty      = 'qty'      in body ? String(body.qty  ?? '').trim()                  : existing.qty;
+  const newCategory = 'category' in body ? coerceCategory(body.category)                   : existing.category;
+
+  db.prepare(
+    'UPDATE pantry SET name = ?, qty = ?, category = ?, updated_at = ? WHERE id = ?'
+  ).run(newName, newQty, newCategory, now, req.params.id);
+
+  const row = db.prepare('SELECT * FROM pantry WHERE id = ?').get(req.params.id);
+  res.json(rowToPantryItem(row));
+});
+
+// DELETE /api/pantry/:id
+app.delete('/api/pantry/:id', (req, res) => {
+  const result = db
+    .prepare('DELETE FROM pantry WHERE id = ?')
+    .run(req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'Pantry item not found' });
+  }
+  res.status(204).end();
+});
+
+// POST /api/pantry/:id/to-shopping — "running low": copy pantry item to shopping list.
+// The pantry item is NOT removed. De-duped by case-insensitive name (same as from-recipe).
+app.post('/api/pantry/:id/to-shopping', (req, res) => {
+  const pantryItem = db
+    .prepare('SELECT * FROM pantry WHERE id = ?')
+    .get(req.params.id);
+  if (!pantryItem) return res.status(404).json({ error: 'Pantry item not found' });
+
+  // De-dupe: if this name already exists on the shopping list, skip.
+  const existing = db
+    .prepare('SELECT * FROM shopping_list WHERE lower(name) = lower(?)')
+    .get(pantryItem.name);
+  if (existing) {
+    return res.json({ added: null, skipped: true });
+  }
+
+  const maxPos = db
+    .prepare('SELECT COALESCE(MAX(position), -1) as mp FROM shopping_list')
+    .get();
+  const position = (maxPos?.mp ?? -1) + 1;
+
+  const id  = randomUUID();
+  db.prepare(
+    'INSERT INTO shopping_list (id, name, qty, checked, position) VALUES (?, ?, ?, 0, ?)'
+  ).run(id, pantryItem.name, pantryItem.qty, position);
+
+  const row = db.prepare('SELECT * FROM shopping_list WHERE id = ?').get(id);
+  res.status(201).json(rowToShoppingItem(row));
+});
+
+// POST /api/shopping-list/move-to-pantry — move all CHECKED shopping items into the pantry.
+// NOTE: registered here (after shopping-list routes) but under /api/shopping-list/* to keep
+// routes semantically grouped. Express matches routes in registration order; since
+// /api/shopping-list/clear-checked is already registered above and uses a literal path,
+// and move-to-pantry also uses a literal path, there is no conflict with /:id.
+app.post('/api/shopping-list/move-to-pantry', (req, res) => {
+  // Fetch all checked shopping items.
+  const checkedItems = db
+    .prepare('SELECT * FROM shopping_list WHERE checked = 1')
+    .all();
+
+  if (checkedItems.length === 0) {
+    return res.json({ moved: [], skipped: 0 });
+  }
+
+  // Fetch existing pantry names (lowercase) for de-dupe.
+  const existingPantryRows = db
+    .prepare('SELECT name FROM pantry')
+    .all();
+  const existingPantryNames = new Set(
+    existingPantryRows.map((r) => r.name.toLowerCase())
+  );
+
+  const moved   = [];
+  let   skipped = 0;
+
+  const insertPantry = db.prepare(
+    'INSERT INTO pantry (id, name, qty, category, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  const deleteShoppingItem = db.prepare(
+    'DELETE FROM shopping_list WHERE id = ?'
+  );
+
+  const now = new Date().toISOString();
+
+  const move = db.transaction(() => {
+    for (const item of checkedItems) {
+      const nameLower = item.name.toLowerCase();
+
+      if (existingPantryNames.has(nameLower)) {
+        // Already in pantry — skip adding but still remove from shopping list.
+        skipped += 1;
+        deleteShoppingItem.run(item.id);
+        continue;
+      }
+
+      // Auto-categorize.
+      const category = guessCategory(item.name);
+
+      // position = max within category so far (may change with each insert inside
+      // the transaction, so we query inline per item).
+      const maxPos = db
+        .prepare(
+          'SELECT COALESCE(MAX(position), -1) as mp FROM pantry WHERE category = ?'
+        )
+        .get(category);
+      const position = (maxPos?.mp ?? -1) + 1;
+
+      const id = randomUUID();
+      insertPantry.run(id, item.name, item.qty, category, position, now, now);
+      deleteShoppingItem.run(item.id);
+
+      existingPantryNames.add(nameLower); // guard against two checked items with same name
+      moved.push(id);
+    }
+  });
+  move();
+
+  // Hydrate the moved pantry items for the response.
+  const movedItems = moved.map((id) =>
+    rowToPantryItem(db.prepare('SELECT * FROM pantry WHERE id = ?').get(id))
+  );
+
+  res.json({ moved: movedItems, skipped });
+});
+
+// ===========================================================================
 // AI Extract
 // ===========================================================================
 
@@ -1163,7 +1496,10 @@ app.post(
     }
 
     const tempPath = req.file.path;
-    const mimeType = req.file.mimetype || 'video/mp4';
+    // Gemini needs a real video/* MIME; browsers/curl sometimes send
+    // application/octet-stream, so normalize anything non-video to mp4.
+    const rawMime = req.file.mimetype;
+    const mimeType = (rawMime && rawMime.startsWith('video/')) ? rawMime : 'video/mp4';
 
     try {
       const filterLabels = db

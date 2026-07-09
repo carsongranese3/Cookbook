@@ -126,7 +126,7 @@ export async function assignFilters(recipe, filterLabels) {
 // We import the Gemini SDK lazily inside the function so that missing deps
 // surface as a clear CONFIG error rather than a module-load crash.
 
-const DEFAULT_MODEL   = 'gemini-2.0-flash';
+const DEFAULT_MODEL   = 'gemini-3.1-flash-lite';
 const TIMEOUT_MS      = parseInt(process.env.GEMINI_TIMEOUT_MS ?? '', 10) || 120_000;
 const MAX_FILE_BYTES  = 200 * 1024 * 1024; // 200 MB guard
 
@@ -351,7 +351,7 @@ function resolveModelChain() {
     return process.env.GEMINI_MODELS.split(',').map((s) => s.trim()).filter(Boolean);
   }
   const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const fallbacks = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
+  const fallbacks = ['gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
   return [...new Set([primary, ...fallbacks])];
 }
 
@@ -495,7 +495,12 @@ export async function extractWithGemini(filePath, mimeType, caption = '', filter
         return result.response.text();
       } catch (err) {
         const e = err instanceof ExtractError ? err : classifyGeminiError(err);
-        if (e.code === CODES.RATE_LIMITED) { lastRateErr = e; continue; }
+        // Skip to the next model on a rate-limit/overload OR a model-specific issue
+        // (unknown model, or one that can't handle this input) — try another one.
+        const skippable = e.code === CODES.RATE_LIMITED ||
+          (!(err instanceof ExtractError) &&
+            /\b(400|404)\b|not found|not supported|does not support|invalid argument/i.test(String(err?.message || '')));
+        if (skippable) { lastRateErr = e; continue; }
         throw e;
       }
     }

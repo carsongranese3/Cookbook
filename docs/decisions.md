@@ -96,3 +96,27 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
 - `getCurrentWeekDates` stays in `client/src/utils/week.js` — **Recipe Detail's "add to plan" day
   picker still offers the current week only**, which is unchanged and intentional. Month helpers
   live in a new `client/src/utils/month.js`.
+
+## 2026-07-09 — Pantry feature (/feature)
+- New "Pantry" section: an inventory of ingredients you have at home. Sidebar order:
+  Library, Meal Plan, Shopping List, **Pantry**, History (phone bar → 6 tabs).
+- Item fields: `name`, `qty`, `category`. Categories are a fixed set: Produce, Dairy & Eggs,
+  Meat & Seafood, Bakery, Frozen, Pantry staples, Beverages, Condiments & Spices, Other.
+  Grouped by category on screen.
+- **Shopping → Pantry**: "Move checked → Pantry" takes the CHECKED shopping items, adds them to
+  the Pantry (auto-categorized by a server-side keyword guesser, de-duped by case-insensitive
+  name), and REMOVES them from the shopping list.
+- **Pantry → Shopping** ("running low"): a per-item button adds that pantry item to the shopping
+  list (de-duped by name); the item STAYS in the pantry.
+- Backend: `pantry` table + `GET/POST/PATCH/DELETE /api/pantry`, plus
+  `POST /api/shopping-list/move-to-pantry` and `POST /api/pantry/:id/to-shopping`.
+
+## 2026-07-09 — Recipe cover photo: candidate picker + upload (not auto-only)
+- Auto single-frame hero pick proved unreliable (some videos end on the creator, not the dish),
+  so the user gets to CHOOSE the cover photo. No extra AI call (quota-sensitive; user declined billing).
+- At import, the extractor grabs SEVERAL candidate frames (weighted toward the end + the AI's
+  hero timestamp); the draft returns `imageCandidates: string[]` (data URIs) and defaults `image`
+  to the first. The AI-draft UI lets the user tap the best frame, or upload their own photo.
+- Existing recipes: a "Change photo" flow (upload your own, or re-pick a frame). New endpoint
+  `POST /api/recipes/:id/frames` re-downloads the recipe's source_url and returns candidate frames.
+- Frames are ≤720px JPEG data URIs; only the CHOSEN one is persisted on the recipe (candidates are transient).

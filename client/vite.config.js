@@ -9,7 +9,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Cookbook',
+        name: 'The Cookbook',
         short_name: 'Cookbook',
         description: 'Personal recipe app with AI video import',
         theme_color: '#c56a4a',

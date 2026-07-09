@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api.js';
 
 export default function ShoppingList({ isOffline }) {
-  const [items, setItems]     = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
-  const [newItem, setNewItem] = useState('');
-  const [adding, setAdding]   = useState(false);
-  const inputRef              = useRef(null);
+  const [items, setItems]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [newItem, setNewItem]     = useState('');
+  const [adding, setAdding]       = useState(false);
+  const [pantryMsg, setPantryMsg] = useState('');
+  const [movingToPantry, setMovingToPantry] = useState(false);
+  const inputRef                  = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,6 +91,31 @@ export default function ShoppingList({ isOffline }) {
     }
   }
 
+  async function handleMoveToPantry() {
+    if (isOffline) return;
+    const checkedItems = items.filter((i) => i.checked);
+    if (checkedItems.length === 0) {
+      setPantryMsg('No checked items to move.');
+      setTimeout(() => setPantryMsg(''), 3000);
+      return;
+    }
+    setMovingToPantry(true);
+    // Optimistically remove checked items from list
+    setItems((prev) => prev.filter((i) => !i.checked));
+    try {
+      const result = await api.shopping.moveToPantry();
+      const n = result?.moved?.length ?? 0;
+      setPantryMsg(n > 0 ? `Moved ${n} to your pantry.` : 'No checked items to move.');
+      setTimeout(() => setPantryMsg(''), 3500);
+    } catch (e) {
+      setPantryMsg('Could not move to pantry.');
+      setTimeout(() => setPantryMsg(''), 3500);
+      await load(); // revert on error
+    } finally {
+      setMovingToPantry(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="page-pad">
@@ -108,15 +135,30 @@ export default function ShoppingList({ isOffline }) {
           <div className="eyebrow">{uncheckedCount} to buy</div>
           <h1 className="page-title">Shopping List</h1>
         </div>
-        <button
-          className="btn-clear"
-          onClick={handleClearChecked}
-          disabled={!items.some((i) => i.checked) || isOffline}
-          aria-label="Clear all checked items"
-        >
-          Clear checked
-        </button>
       </div>
+
+      {items.some((i) => i.checked) && (
+        <div className="shop-actions">
+          <button
+            className="btn btn-ghost shop-action-btn"
+            onClick={handleMoveToPantry}
+            disabled={isOffline || movingToPantry}
+            title="Move checked items to your pantry"
+          >
+            {movingToPantry ? 'Moving…' : 'Move to Pantry'}
+          </button>
+          <button
+            className="btn btn-ghost shop-action-btn"
+            onClick={handleClearChecked}
+            disabled={isOffline}
+          >
+            Clear checked
+          </button>
+        </div>
+      )}
+      {pantryMsg && (
+        <p className="shop-pantry-msg" role="status">{pantryMsg}</p>
+      )}
 
       {error && (
         <div className="error-banner" role="alert">

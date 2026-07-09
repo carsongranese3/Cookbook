@@ -13,35 +13,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
 import { todayISO } from '../utils/week.js';
-
-// ── Helper: downscale an image File to a JPEG data-URI ───────────────────────
-async function fileToDownscaledDataUrl(file, maxDim = 800) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        if (width >= height) {
-          height = Math.round((height / width) * maxDim);
-          width = maxDim;
-        } else {
-          width = Math.round((width / height) * maxDim);
-          height = maxDim;
-        }
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
-    };
-    img.onerror = reject;
-    img.src = objectUrl;
-  });
-}
+import { fileToDownscaledDataUrl } from '../utils/image.js';
 
 // ── Format a YYYY-MM-DD date string for display ──────────────────────────────
 function formatHistoryDate(isoDate) {
