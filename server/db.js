@@ -130,4 +130,27 @@ db.exec(`
   );
 `);
 
+// ---------------------------------------------------------------------------
+// History — log of what was cooked, linked to a Library recipe.
+// Multiple entries per day per recipe are allowed (no uniqueness constraint).
+// History rows are intentionally NOT cascade-deleted when a recipe is deleted;
+// the hydration layer renders recipe: null for orphaned entries.
+// ---------------------------------------------------------------------------
+
+// No FOREIGN KEY constraint on recipe_id — history entries intentionally
+// survive recipe deletion. The hydration layer renders recipe: null for
+// any entry whose recipe_id no longer exists in the recipes table.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS history (
+    id          TEXT PRIMARY KEY,
+    recipe_id   TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    rating      INTEGER,
+    image       TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+`);
+
 export default db;

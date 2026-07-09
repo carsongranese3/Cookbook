@@ -16,8 +16,9 @@ CORS: open (single-user private deployment)
 3. [Filters](#3-filters)
 4. [Meal Plan](#4-meal-plan)
 5. [Shopping List](#5-shopping-list)
-6. [AI Extract](#6-ai-extract)
-7. [Common error shape](#7-common-error-shape)
+6. [History](#6-history)
+7. [AI Extract](#7-ai-extract)
+8. [Common error shape](#8-common-error-shape)
 
 ---
 
@@ -326,7 +327,7 @@ Each filter's `position` is set to its index in the array. IDs not present in th
 
 The meal plan is a join table: a day can hold multiple recipes; a recipe can appear on multiple days.
 
-`GET /api/meal-plan` always returns all seven days of the **current Mon–Sun week**, even if a day has no assignments.
+`GET /api/meal-plan` returns a date range keyed by ISO date, even if a day has no assignments. By default it returns the **current month's calendar grid** (Mon-first); pass `start`/`end` to request an explicit range.
 
 ### Meal plan entry object
 
@@ -352,27 +353,46 @@ The meal plan is a join table: a day can hold multiple recipes; a recipe can app
 
 ### `GET /api/meal-plan`
 
-Return the current week's meal plan, keyed by ISO date.
+Return the meal plan for a date range, keyed by ISO date.
+
+**Query params (optional, both-or-neither):**
+- `start` — `YYYY-MM-DD`, inclusive start of the range.
+- `end` — `YYYY-MM-DD`, inclusive end of the range.
+
+If neither is provided, the range defaults to the **current month's calendar grid**: the Monday on/before the 1st of the current month, through the Sunday on/after the last day of the current month (35 or 42 days, matching a Mon-first calendar view).
 
 **Response 200**
 ```json
 {
-  "week": ["2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13"],
+  "start": "2026-06-29",
+  "end": "2026-08-02",
+  "days": ["2026-06-29", "2026-06-30", "...", "2026-08-02"],
   "plan": {
-    "2026-07-07": [{ ...mealPlanEntry }, ...],
-    "2026-07-08": [],
-    "2026-07-09": [],
-    "2026-07-10": [],
-    "2026-07-11": [],
-    "2026-07-12": [],
-    "2026-07-13": []
+    "2026-06-29": [{ ...mealPlanEntry }, ...],
+    "2026-06-30": [],
+    "...": []
   }
 }
 ```
 
-`week` is an array of ISO dates Mon–Sun for the current week.
-Every day in `week` is present as a key in `plan`; empty days hold an empty array.
-Entries within each day are ordered by `position`.
+`days` is every ISO date in `[start, end]`, inclusive, ascending. Every date in `days` is present as a key in `plan`; empty days hold an empty array. Entries within each day are ordered by `position`.
+
+**Response 400**
+```json
+{ "error": "start and end must both be provided, or neither" }
+```
+or
+```json
+{ "error": "start and end must be YYYY-MM-DD" }
+```
+or
+```json
+{ "error": "end must not be before start" }
+```
+or
+```json
+{ "error": "range must be at most 62 days" }
+```
 
 ---
 
@@ -539,7 +559,125 @@ Remove all checked items.
 
 ---
 
-## 6. AI Extract
+## 6. History
+
+A log of what the user cooked and when, each entry linked to a Library recipe. Multiple entries for the same recipe on the same day are allowed.
+
+History entries survive recipe deletion — if the linked recipe is later deleted the entry remains in the log with `recipe: null`.
+
+### History entry object
+
+```json
+{
+  "id":          "uuid string",
+  "recipe_id":   "uuid string",
+  "date":        "2026-07-09",
+  "rating":      4,
+  "image":       "data:image/jpeg;base64,... or null",
+  "description": "string (may be empty)",
+  "created_at":  "2026-07-09T10:00:00.000Z",
+  "updated_at":  "2026-07-09T10:00:00.000Z",
+  "recipe": {
+    "id":      "uuid string",
+    "title":   "string",
+    "image":   "URL or null",
+    "cuisine": "string",
+    "minutes": 25
+  }
+}
+```
+
+Field notes:
+- `date` — ISO date `YYYY-MM-DD` (the day the recipe was cooked).
+- `rating` — integer 1–5 or `null` (unrated).
+- `image` — data URI of the user's uploaded photo, or `null`.
+- `description` — free-text note; defaults to empty string.
+- `recipe` — minimal hydrated stub of the linked Library recipe. `null` when the recipe has been deleted since the entry was created; the entry itself is preserved.
+
+---
+
+### `GET /api/history`
+
+Return all history entries, newest date first (tie-broken by `created_at DESC`), each hydrated with the linked recipe stub.
+
+**Response 200** — array of history entry objects.
+
+```json
+[{ ...historyEntry }, ...]
+```
+
+---
+
+### `POST /api/history`
+
+Create a new history entry.
+
+**Request body:**
+```json
+{
+  "recipe_id":   "uuid string (required)",
+  "date":        "2026-07-09 (optional, defaults to today's local date)",
+  "rating":      4,
+  "image":       "data URI string or null",
+  "description": "string"
+}
+```
+
+- `recipe_id` — required; must reference an existing recipe (404 if not found).
+- `date` — optional; if omitted, defaults to today's date in local time (`YYYY-MM-DD`).
+- `rating` — optional; coerced to integer, clamped to 1–5; `null` if omitted or invalid.
+- `image` — optional; stored as a plain text data URI string.
+- `description` — optional; trimmed; defaults to empty string.
+
+**Response 201** — the created history entry object (hydrated).
+
+**Response 400**
+```json
+{ "error": "recipe_id is required" }
+```
+
+**Response 404** — `{ "error": "Recipe not found" }` (when `recipe_id` does not exist)
+
+---
+
+### `PATCH /api/history/:id`
+
+Partial update of a history entry. Only the fields present in the request body are changed.
+
+**Path param:** `id` — history entry UUID.
+
+**Request body** (all fields optional):
+```json
+{
+  "date":        "2026-07-10",
+  "rating":      5,
+  "image":       "data URI string or null",
+  "description": "string"
+}
+```
+
+- `recipe_id` cannot be changed after creation.
+- `rating` — set to `null` by passing `null` or `""`.
+
+**Response 200** — updated history entry object (hydrated).
+
+**Response 404** — `{ "error": "History entry not found" }`
+
+---
+
+### `DELETE /api/history/:id`
+
+Remove a single history entry. Does not affect the linked recipe.
+
+**Path param:** `id` — history entry UUID.
+
+**Response 204** — no body.
+
+**Response 404** — `{ "error": "History entry not found" }`
+
+---
+
+## 7. AI Extract
 
 Runs server-side only. The Gemini API key is never exposed to the browser.
 Both endpoints return a **draft recipe JSON** that is **not persisted** — the frontend displays it as an editable draft, and a separate `POST /api/recipes` call saves it.
@@ -631,7 +769,7 @@ The server saves the upload to a temp file, calls Gemini, then deletes the temp 
 
 ---
 
-## 7. Common error shape
+## 8. Common error shape
 
 All error responses follow:
 ```json

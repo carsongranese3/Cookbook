@@ -554,35 +554,106 @@ app.post('/api/recipes/:id/assign-filters', async (req, res) => {
 // Meal Plan
 // ===========================================================================
 
-/**
- * Return the Monday–Sunday ISO dates for the week containing `date`.
- */
-function currentWeekDays(date = new Date()) {
-  const dow = date.getDay(); // 0=Sun,1=Mon,...6=Sat
-  const diffToMon = (dow === 0 ? -6 : 1 - dow);
-  const monday = new Date(date);
-  monday.setDate(date.getDate() + diffToMon);
+// Build YYYY-MM-DD from LOCAL components (must match the client's
+// toISODate in client/src/utils/week.js). Using toISOString() here would
+// use UTC and drift a day in negative-offset timezones.
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
+// Parse a YYYY-MM-DD string into a local Date (avoids the UTC-midnight
+// parsing of `new Date('YYYY-MM-DD')`, which drifts a day in negative
+// offsets — same reasoning as toISODate above).
+function parseLocalDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/**
+ * Every ISO date from `startISO` to `endISO`, inclusive, ascending.
+ */
+function datesInRange(startISO, endISO) {
+  const start = parseLocalDate(startISO);
+  const end = parseLocalDate(endISO);
   const days = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    // Build YYYY-MM-DD from LOCAL components (must match the client's
-    // toISODate in client/src/utils/week.js). Using toISOString() here would
-    // use UTC and drift a day in negative-offset timezones.
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    days.push(`${y}-${m}-${day}`);
+  const cur = new Date(start);
+  while (cur <= end) {
+    days.push(toISODate(cur));
+    cur.setDate(cur.getDate() + 1);
   }
   return days;
 }
 
-// GET /api/meal-plan — current Mon–Sun, hydrated with recipe minimal fields.
-app.get('/api/meal-plan', (_req, res) => {
-  const days = currentWeekDays();
+/**
+ * The calendar-grid range for the month containing `date`: the Monday
+ * on/before the 1st of the month, through the Sunday on/after the last day.
+ */
+function monthGridRange(date = new Date()) {
+  const first = new Date(date.getFullYear(), date.getMonth(), 1);
+  const last = new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
-  // Fetch all meal-plan rows for this week, joined to minimal recipe fields.
+  const firstDow = first.getDay(); // 0=Sun,1=Mon,...6=Sat
+  const diffToMon = firstDow === 0 ? -6 : 1 - firstDow;
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() + diffToMon);
+
+  const lastDow = last.getDay();
+  const diffToSun = lastDow === 0 ? 0 : 7 - lastDow;
+  const gridEnd = new Date(last);
+  gridEnd.setDate(last.getDate() + diffToSun);
+
+  return { start: toISODate(gridStart), end: toISODate(gridEnd) };
+}
+
+const MAX_MEAL_PLAN_RANGE_DAYS = 62;
+
+// GET /api/meal-plan — a date range (via ?start=&end=), or the current
+// month's calendar grid by default, hydrated with recipe minimal fields.
+app.get('/api/meal-plan', (req, res) => {
+  const { start: qStart, end: qEnd } = req.query;
+
+  let start, end;
+  if (qStart || qEnd) {
+    if (!qStart || !qEnd) {
+      return res
+        .status(400)
+        .json({ error: 'start and end must both be provided, or neither' });
+    }
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(qStart) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(qEnd)
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'start and end must be YYYY-MM-DD' });
+    }
+    if (qEnd < qStart) {
+      return res.status(400).json({ error: 'end must not be before start' });
+    }
+    start = qStart;
+    end = qEnd;
+  } else {
+    ({ start, end } = monthGridRange());
+  }
+
+  // Enforce the cap arithmetically from the two parsed local dates BEFORE
+  // materializing the day list, so a huge user-supplied range can't drive
+  // unbounded work/allocation. Math.round absorbs the ±1h DST drift so the
+  // inclusive count stays exact across a spring-forward/fall-back boundary.
+  const dayCount =
+    Math.round((parseLocalDate(end) - parseLocalDate(start)) / 86400000) + 1;
+  if (dayCount > MAX_MEAL_PLAN_RANGE_DAYS) {
+    return res
+      .status(400)
+      .json({ error: `range must be at most ${MAX_MEAL_PLAN_RANGE_DAYS} days` });
+  }
+
+  const days = datesInRange(start, end);
+
+  // Fetch all meal-plan rows in range, joined to minimal recipe fields.
   const rows = db
     .prepare(
       `SELECT mp.id, mp.day, mp.recipe_id, mp.position,
@@ -592,9 +663,9 @@ app.get('/api/meal-plan', (_req, res) => {
        WHERE mp.day >= ? AND mp.day <= ?
        ORDER BY mp.day, mp.position`
     )
-    .all(days[0], days[6]);
+    .all(start, end);
 
-  // Build a map keyed by ISO date; every day in the week is present.
+  // Build a map keyed by ISO date; every day in the range is present.
   const plan = {};
   for (const day of days) {
     plan[day] = [];
@@ -617,7 +688,7 @@ app.get('/api/meal-plan', (_req, res) => {
     });
   }
 
-  res.json({ week: days, plan });
+  res.json({ start, end, days, plan });
 });
 
 // POST /api/meal-plan — assign a recipe to a day.
@@ -840,6 +911,179 @@ app.post('/api/shopping-list/clear-checked', (_req, res) => {
     .prepare('DELETE FROM shopping_list WHERE checked = 1')
     .run();
   res.json({ deleted: result.changes });
+});
+
+// ===========================================================================
+// History
+// ===========================================================================
+
+/**
+ * Hydrate a raw history DB row into the API shape, fetching the minimal recipe
+ * stub via a LEFT JOIN so that deleted recipes yield recipe: null rather than
+ * dropping the entry.
+ */
+function rowToHistoryEntry(row) {
+  return {
+    id:          row.id,
+    recipe_id:   row.recipe_id,
+    date:        row.date,
+    rating:      row.rating != null ? Number(row.rating) : null,
+    image:       row.image ?? null,
+    description: row.description ?? '',
+    created_at:  row.created_at,
+    updated_at:  row.updated_at,
+    recipe: row.recipe_title
+      ? {
+          id:      row.recipe_id,
+          title:   row.recipe_title,
+          image:   row.recipe_image ?? null,
+          cuisine: row.recipe_cuisine ?? '',
+          minutes: row.recipe_minutes != null ? Number(row.recipe_minutes) : null,
+        }
+      : null,
+  };
+}
+
+/** Fetch a single history row joined to the recipe stub (or null if deleted). */
+function getHistoryRow(id) {
+  return db
+    .prepare(
+      `SELECT h.id, h.recipe_id, h.date, h.rating, h.image, h.description,
+              h.created_at, h.updated_at,
+              r.title  AS recipe_title,
+              r.image  AS recipe_image,
+              r.cuisine AS recipe_cuisine,
+              r.minutes AS recipe_minutes
+       FROM history h
+       LEFT JOIN recipes r ON h.recipe_id = r.id
+       WHERE h.id = ?`
+    )
+    .get(id);
+}
+
+/** Build today's date as YYYY-MM-DD from local components (mirrors currentWeekDays). */
+function localToday() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// GET /api/history — all entries, newest date first, hydrated with recipe stub.
+app.get('/api/history', (_req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT h.id, h.recipe_id, h.date, h.rating, h.image, h.description,
+              h.created_at, h.updated_at,
+              r.title  AS recipe_title,
+              r.image  AS recipe_image,
+              r.cuisine AS recipe_cuisine,
+              r.minutes AS recipe_minutes
+       FROM history h
+       LEFT JOIN recipes r ON h.recipe_id = r.id
+       ORDER BY h.date DESC, h.created_at DESC`
+    )
+    .all();
+  res.json(rows.map(rowToHistoryEntry));
+});
+
+// POST /api/history — create a new history entry.
+app.post('/api/history', (req, res) => {
+  const body = req.body ?? {};
+
+  const recipe_id = String(body.recipe_id ?? '').trim();
+  if (!recipe_id) {
+    return res.status(400).json({ error: 'recipe_id is required' });
+  }
+
+  // Verify the recipe exists (we still allow entries to persist if later deleted,
+  // but the POST itself must reference a real recipe).
+  const recipeExists = db
+    .prepare('SELECT id FROM recipes WHERE id = ?')
+    .get(recipe_id);
+  if (!recipeExists) {
+    return res.status(404).json({ error: 'Recipe not found' });
+  }
+
+  const date = String(body.date ?? '').trim() || localToday();
+
+  // Clamp rating to integer 1–5 or null.
+  let rating = null;
+  if (body.rating !== undefined && body.rating !== null && body.rating !== '') {
+    const r = parseInt(body.rating, 10);
+    if (Number.isFinite(r)) {
+      rating = Math.min(5, Math.max(1, r));
+    }
+  }
+
+  const image       = body.image ? String(body.image) : null;
+  const description = String(body.description ?? '').trim();
+
+  const id  = randomUUID();
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT INTO history (id, recipe_id, date, rating, image, description, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, recipe_id, date, rating, image, description, now, now);
+
+  const row = getHistoryRow(id);
+  res.status(201).json(rowToHistoryEntry(row));
+});
+
+// PATCH /api/history/:id — partial update (date, rating, image, description).
+app.patch('/api/history/:id', (req, res) => {
+  const existing = db
+    .prepare('SELECT * FROM history WHERE id = ?')
+    .get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'History entry not found' });
+
+  const body = req.body ?? {};
+  const now  = new Date().toISOString();
+
+  // Only update fields that were provided.
+  const newDate = 'date' in body
+    ? String(body.date ?? '').trim() || existing.date
+    : existing.date;
+
+  let newRating = existing.rating;
+  if ('rating' in body) {
+    if (body.rating === null || body.rating === '') {
+      newRating = null;
+    } else {
+      const r = parseInt(body.rating, 10);
+      newRating = Number.isFinite(r) ? Math.min(5, Math.max(1, r)) : null;
+    }
+  }
+
+  const newImage = 'image' in body
+    ? (body.image ? String(body.image) : null)
+    : existing.image;
+
+  const newDescription = 'description' in body
+    ? String(body.description ?? '').trim()
+    : existing.description;
+
+  db.prepare(
+    `UPDATE history
+     SET date = ?, rating = ?, image = ?, description = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(newDate, newRating, newImage, newDescription, now, req.params.id);
+
+  const row = getHistoryRow(req.params.id);
+  res.json(rowToHistoryEntry(row));
+});
+
+// DELETE /api/history/:id — remove a single history entry.
+app.delete('/api/history/:id', (req, res) => {
+  const result = db
+    .prepare('DELETE FROM history WHERE id = ?')
+    .run(req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'History entry not found' });
+  }
+  res.status(204).end();
 });
 
 // ===========================================================================

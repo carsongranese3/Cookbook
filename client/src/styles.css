@@ -205,21 +205,26 @@ a:hover { color: var(--accent-dark); }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   cursor: pointer;
   border: none;
   background: none;
-  padding: 8px 0 2px;
+  padding: 6px 2px 2px;
   color: var(--muted);
-  font: 500 10px 'Onest';
+  font: 500 9.5px 'Onest';
   transition: color 0.12s;
+  min-width: 0;
+}
+
+.tab-item svg {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
 }
 
 .tab-item.active {
   color: var(--accent);
 }
-
-.tab-item svg { transition: color 0.12s; }
 
 /* ── Responsive: hide/show sidebar vs tab bar ──────────────────────────── */
 .sidebar { display: flex; }
@@ -1147,37 +1152,186 @@ a:hover { color: var(--accent-dark); }
 }
 
 /* ── Meal Plan ──────────────────────────────────────────────────────────── */
-.week-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 12px;
-  margin-top: 26px;
+
+/* Month nav header (replaces the old "This week" eyebrow) */
+.plan-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.day-col {
+.plan-nav-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: 600 15px 'Onest';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+
+.plan-nav-btn:hover { color: var(--text); background: var(--fill); }
+
+.plan-today-btn {
+  margin-left: 4px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: 600 11px 'Onest';
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.plan-today-btn:hover { background: #fdf3ef; color: var(--accent-dark); }
+
+/* Weekday header row */
+.cal-weekday-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.cal-weekday {
+  text-align: center;
+  font: 600 10px 'Onest';
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--label);
+  padding-bottom: 6px;
+}
+
+/* Desktop month grid */
+.cal-grid {
+  display: none;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 768px) {
+  .cal-grid { display: grid; }
+}
+
+.cal-cell {
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 10px;
+  padding: 8px;
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  min-height: 160px;
+  min-height: 108px;
 }
 
-.day-col.today {
+.cal-cell.today {
   background: #fdf6f3;
   border-color: #f3d9cd;
 }
 
-.day-name {
-  font: 600 12px 'Onest';
-  color: var(--text);
+.cal-cell.other-month {
+  background: var(--fill);
+  border-color: var(--border-light);
 }
 
-.day-date {
-  font: 400 10px 'Onest';
+.cal-cell.other-month .cal-date-num { color: var(--muted); }
+
+.cal-date-num {
+  font: 600 12px 'Onest';
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.cal-cell.today .cal-date-num { color: var(--accent-dark); }
+
+.cal-more-btn {
+  border: none;
+  background: none;
   color: var(--label);
-  margin-bottom: 8px;
+  font: 500 10px 'Onest';
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 2px 4px;
+}
+
+.cal-more-btn:hover { color: var(--accent); }
+
+.cal-add-btn {
+  height: 22px;
+  border-radius: 7px;
+  border: 1px dashed #d8d4cc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--label);
+  cursor: pointer;
+  font: 500 13px 'Onest';
+  background: none;
+  margin-top: auto;
+  width: 100%;
+  transition: background 0.12s;
+}
+
+.cal-add-btn:hover { background: var(--fill); }
+
+/* Phone compact month grid */
+.cal-grid-phone {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+
+@media (min-width: 768px) {
+  .cal-grid-phone { display: none; }
+}
+
+.cal-cell-phone {
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.cal-cell-phone.today {
+  background: #fdf6f3;
+  border-color: #f3d9cd;
+}
+
+.cal-cell-phone.other-month {
+  background: var(--fill);
+  border-color: var(--border-light);
+}
+
+.cal-cell-phone.other-month .cal-date-num { color: var(--muted); }
+
+.cal-cell-phone .cal-date-num {
+  margin-bottom: 0;
+  font: 600 13px 'Onest';
+}
+
+.cal-cell-phone.today .cal-date-num { color: var(--accent-dark); }
+
+.cal-dot-count {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font: 600 9px 'Onest';
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .meal-thumb-card {
@@ -1196,6 +1350,23 @@ a:hover { color: var(--accent-dark); }
   height: 60px;
   object-fit: cover;
   display: block;
+}
+
+.meal-thumb-card.cal-thumb {
+  margin-bottom: 4px;
+}
+
+.meal-thumb-card.cal-thumb img,
+.meal-thumb-card.cal-thumb .placeholder-img {
+  height: 26px;
+}
+
+.meal-thumb-card.cal-thumb .meal-thumb-title {
+  padding: 3px 5px;
+  font-size: 9.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .meal-thumb-title {
@@ -1230,38 +1401,7 @@ a:hover { color: var(--accent-dark); }
   .meal-thumb-remove { opacity: 1; }
 }
 
-.day-add-btn {
-  height: 30px;
-  border-radius: 8px;
-  border: 1px dashed #d8d4cc;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--label);
-  cursor: pointer;
-  font: 500 16px 'Onest';
-  background: none;
-  margin-top: auto;
-  width: 100%;
-  transition: background 0.12s;
-}
-
-.day-add-btn:hover { background: var(--fill); }
-
-/* Phone meal plan */
-.plan-day-row {
-  margin-bottom: 14px;
-}
-
-.plan-day-header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.plan-day-header .plan-day-name { font: 600 13px 'Onest'; color: var(--text); }
-.plan-day-header .plan-day-date { font: 400 11px 'Onest'; color: var(--label); }
-
+/* Phone day-sheet meal rows (reused inside the modal opened from the compact grid) */
 .plan-meal-ph {
   display: flex;
   align-items: center;
@@ -2417,4 +2557,276 @@ a:hover { color: var(--accent-dark); }
   border: 1px solid var(--border);
   font: 500 11px 'Onest';
   color: var(--body);
+}
+
+/* ── History Screen ─────────────────────────────────────────────────────── */
+
+/* Entry list */
+.hist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+/* Entry card */
+.hist-card {
+  display: flex;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  position: relative;
+}
+
+.hist-card-img-wrap {
+  width: 100px;
+  min-height: 100px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.hist-card-body {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 14px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hist-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hist-card-title {
+  font: 600 14px/1.3 'Onest';
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s;
+  flex: 1;
+  min-width: 0;
+}
+
+.hist-card-title:hover { color: var(--accent); }
+
+.hist-card-title--removed {
+  color: var(--muted);
+  cursor: default;
+  font-weight: 400;
+}
+
+.hist-card-title--removed:hover { color: var(--muted); }
+
+.hist-card-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.hist-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: color 0.12s, background 0.12s;
+}
+
+.hist-icon-btn:hover {
+  color: var(--text);
+  background: var(--fill);
+}
+
+.hist-icon-btn--danger:hover {
+  color: var(--danger);
+  background: #fdf1f0;
+}
+
+.hist-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hist-card-date {
+  font: 400 11px 'Onest';
+  color: var(--muted);
+}
+
+.hist-card-desc {
+  font: 400 13px/1.5 'Onest';
+  color: var(--secondary);
+  margin: 2px 0 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Phone: stack image above body */
+@media (max-width: 767px) {
+  .hist-card {
+    flex-direction: column;
+    gap: 0;
+  }
+  .hist-card-img-wrap {
+    width: 100%;
+    height: 160px;
+    min-height: unset;
+  }
+  .hist-card-body {
+    padding: 12px 14px 14px;
+  }
+}
+
+/* ── Star display (read-only) ─────────────────────────────────────────────── */
+.hist-stars-display {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.hist-star {
+  font-size: 13px;
+  color: var(--border);
+  line-height: 1;
+}
+
+.hist-star.filled {
+  color: #e8a020;
+}
+
+/* ── Star picker (interactive) ───────────────────────────────────────────── */
+.hist-star-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.hist-star-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--border);
+  padding: 0;
+  transition: color 0.1s, transform 0.1s;
+}
+
+.hist-star-btn.on {
+  color: #e8a020;
+}
+
+.hist-star-btn:hover {
+  transform: scale(1.15);
+}
+
+/* ── History entry form modal ─────────────────────────────────────────────── */
+.hist-form-modal {
+  width: 520px;
+  max-height: 90vh;
+}
+
+@media (max-width: 767px) {
+  .hist-form-modal {
+    width: 100%;
+    max-height: 92vh;
+  }
+}
+
+/* Recipe selector */
+.hist-selected-recipe {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--fill);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.hist-selected-title {
+  flex: 1;
+  min-width: 0;
+  font: 600 13px 'Onest';
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline recipe picker panel */
+.hist-picker-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.hist-picker-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+/* Photo upload */
+.hist-photo-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-btn);
+  background: var(--fill);
+  border: 1px dashed var(--border);
+  font: 500 12px 'Onest';
+  color: var(--secondary);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.hist-photo-upload-btn:hover {
+  background: #eceae4;
+  border-color: #ccc9c3;
+}
+
+.hist-photo-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.hist-photo-img {
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 10px;
+  object-fit: cover;
+  display: block;
+}
+
+.hist-photo-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: 500 11px 'Onest';
+  color: var(--danger);
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

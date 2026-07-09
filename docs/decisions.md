@@ -65,3 +65,34 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
   serving, no delete cleanup). Tradeoff: image bytes ride in `GET /api/recipes` payloads — fine
   for a personal single-user library; revisit with file storage if the collection grows large.
 - Requires **ffmpeg** on PATH (already present as a yt-dlp merge dependency).
+
+## 2026-07-09 — History feature (/feature)
+- New "History" section: a log of what was cooked, per entry. Each entry LINKS to a Library
+  recipe (`recipe_id`); **multiple entries per day** are allowed.
+- Entry fields: `date`, `rating` (1–5, optional), `image` (the user's own uploaded photo,
+  downscaled client-side to ≤800px JPEG and stored inline as a data URI), `description`.
+- History entries **persist even if the linked recipe is deleted** (GET hydrates `recipe: null`);
+  intentionally NOT cascaded on recipe delete (unlike meal_plan, which does cascade).
+- Backend: `history` table + `GET/POST/PATCH/DELETE /api/history` (hydrated with the recipe).
+- Frontend: History tab (desktop sidebar + phone tab bar, now 5 phone tabs), a self-contained
+  HistoryScreen with an internal add/edit modal (recipe picker + date + star rating + photo + notes).
+- **Finishing Cook Mode** (Done on the last step) opens a pre-filled History entry (that recipe +
+  today's date); closing Cook Mode via the X does NOT log.
+
+## 2026-07-09 — Meal Plan becomes a month calendar
+- The Meal Plan screen shows a **month** (not the current Mon–Sun week) and can page to
+  **previous / future months**. A "Today" control jumps back to the current month.
+- **API contract:** `GET /api/meal-plan` takes optional `?start=YYYY-MM-DD&end=YYYY-MM-DD`.
+  With no params it defaults to the **current month's calendar grid** range. Response shape
+  changes from `{ week, plan }` to **`{ start, end, days, plan }`** — `days` is every ISO date in
+  the range (inclusive), `plan` is keyed by ISO date with an entry array for every day in `days`.
+  Range is capped at **62 days**; malformed or inverted ranges → `400`.
+- The client asks for the **full calendar grid** (Mon-first weeks that cover the month, so the
+  first and last rows may include adjacent-month days), not just the 1st–last of the month. Those
+  adjacent-month cells render dimmed but are still plannable.
+- **Phone layout:** a month grid can't hold meal thumbnails, so phone shows a compact grid with a
+  per-day meal-count dot, and **tapping a day opens a day sheet** listing that day's meals with
+  add/remove. Desktop keeps inline thumbnails in each cell.
+- `getCurrentWeekDates` stays in `client/src/utils/week.js` — **Recipe Detail's "add to plan" day
+  picker still offers the current week only**, which is unchanged and intentional. Month helpers
+  live in a new `client/src/utils/month.js`.

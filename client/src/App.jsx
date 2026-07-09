@@ -7,8 +7,9 @@ import AddFromVideo from './screens/AddFromVideo.jsx';
 import MealPlan from './screens/MealPlan.jsx';
 import ShoppingList from './screens/ShoppingList.jsx';
 import CookingMode from './screens/CookingMode.jsx';
+import HistoryScreen from './screens/HistoryScreen.jsx';
 import { api } from './api.js';
-import { getCurrentWeekDates } from './utils/week.js';
+import { getCurrentWeekDates, todayISO } from './utils/week.js';
 
 /**
  * View state machine:
@@ -23,7 +24,7 @@ export default function App() {
   const [recipesError, setRE]         = useState('');
 
   // ── Navigation state ────────────────────────────────────────────────────
-  const [tab, setTab]       = useState('library'); // library | plan | shopping | add
+  const [tab, setTab]       = useState('library'); // library | plan | shopping | add | history
   const [view, setView]     = useState('list');    // list | detail | form | cooking
   const [activeId, setAI]   = useState(null);
   const [newMode, setNewMode] = useState('manual'); // manual | import — for the New recipe screen
@@ -32,6 +33,9 @@ export default function App() {
   const [detailRecipe, setDR]   = useState(null);
   const [detailLoading, setDL]  = useState(false);
   const [detailError, setDE]    = useState('');
+
+  // ── History prefill (set when Cook Mode finishes) ───────────────────────
+  const [historyPrefill, setHistoryPrefill] = useState(null);
 
   // ── Offline detection ───────────────────────────────────────────────────
   const [isOffline, setOffline] = useState(!navigator.onLine);
@@ -95,6 +99,7 @@ export default function App() {
   }
 
   function openDetail(id) {
+    setTab('library');
     setAI(id);
     setView('detail');
     loadDetail(id);
@@ -111,7 +116,6 @@ export default function App() {
   function openEdit(id) {
     setAI(id);
     setView('form');
-    // detailRecipe is already loaded
   }
 
   function openCooking() {
@@ -128,6 +132,12 @@ export default function App() {
     setAI(null);
     setDR(null);
     setDE('');
+  }
+
+  // ── Cook Mode finish → pre-fill History entry ────────────────────────────
+  function handleCookFinish(recipe) {
+    setHistoryPrefill({ recipe_id: recipe.id, recipe, date: todayISO() });
+    goTab('history');
   }
 
   // ── Recipe CRUD ─────────────────────────────────────────────────────────
@@ -186,7 +196,11 @@ export default function App() {
     return (
       <>
         {isOffline && <div className="offline-toast">You're offline</div>}
-        <CookingMode recipe={currentRecipe} onExit={backToDetail} />
+        <CookingMode
+          recipe={currentRecipe}
+          onExit={backToDetail}
+          onFinish={handleCookFinish}
+        />
       </>
     );
   }
@@ -301,6 +315,16 @@ export default function App() {
               </button>
             </div>
           </>
+        )}
+
+        {/* ── History ── */}
+        {tab === 'history' && view === 'list' && (
+          <HistoryScreen
+            onOpenRecipe={openDetail}
+            prefill={historyPrefill}
+            onPrefillHandled={() => setHistoryPrefill(null)}
+            isOffline={isOffline}
+          />
         )}
       </AppShell>
     </>

@@ -197,7 +197,7 @@ Rules you must follow:
 5. "qty" is a display string like "2 cups", "1 tbsp", "1 lb", "350°F", or "" if unknown.
 6. "protein" and "carb" are ARRAYS of the dish's MAIN protein(s) and MAIN carb(s) — the defining ingredients, not incidental ones (an omelette's protein is ["Egg"]; banana bread's protein is [] even though it contains eggs). USUALLY ONE each, but include multiple when the dish genuinely centers on more than one (surf & turf → ["Beef","Shrimp"]; a bowl served over both rice and noodles → ["Rice","Noodles"]). Use short canonical words (Chicken, Beef, Pork, Turkey, Lamb, Shrimp, Fish, Tofu, Egg, Beans; Rice, Noodles, Pasta, Bread, Potato, Quinoa, Couscous). Empty array [] if the dish has no main protein or no main carb.
 7. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
-8. "hero_seconds": the time in SECONDS (a number; decimals allowed) of the single best "hero" frame in the video — ideally the finished, plated dish looking its most appetizing, or the most visually appealing moment. This frame becomes the recipe's photo. Use 0 only if truly unsure.
+8. "hero_seconds": the timestamp in SECONDS (decimals allowed) of the frame showing the FINISHED, fully PLATED final dish — the completed result, NOT a cooking step, raw ingredients, or a mid-process shot. In cooking videos this is almost always near the END (the final reveal / beauty shot of the plated food). Choose the clearest, most appetizing frame of the completed dish. Use 0 only if the video truly never shows a finished plated result.
 9. Return nothing outside the JSON object.${filtersRule}`;
 }
 

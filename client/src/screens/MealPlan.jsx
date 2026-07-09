@@ -1,24 +1,44 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { api } from '../api.js';
-import { shortDayName, formatDayDate, todayISO } from '../utils/week.js';
+import { todayISO } from '../utils/week.js';
+import {
+  WEEKDAY_LABELS,
+  getCurrentYearMonth,
+  addMonths,
+  getMonthLabel,
+  getMonthGridDates,
+  isSameMonth,
+  dayNumber,
+  formatSheetDate,
+} from '../utils/month.js';
 import RecipeImage from '../components/RecipeImage.jsx';
 
+const MAX_VISIBLE_THUMBS = 2;
+
 export default function MealPlan({ onOpenRecipe, isOffline }) {
+  const [{ year: viewYear, month: viewMonth }, setViewed] = useState(getCurrentYearMonth());
   const [planData, setPlanData]     = useState(null);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState('');
-  const [picker, setPicker]         = useState(null); // { day: ISO }
+  const [picker, setPicker]         = useState(null); // { day: ISO, returnToDaySheet: bool }
+  const [daySheet, setDaySheet]     = useState(null);  // ISO date, phone day-sheet
   const [recipes, setRecipes]       = useState([]);
   const [pickerSearch, setPickerSearch] = useState('');
 
   const today = todayISO();
+  const { year: curYear, month: curMonth } = getCurrentYearMonth();
+  const isCurrentMonth = viewYear === curYear && viewMonth === curMonth;
+
+  const gridDates = useMemo(() => getMonthGridDates(viewYear, viewMonth), [viewYear, viewMonth]);
+  const rangeStart = gridDates[0];
+  const rangeEnd = gridDates[gridDates.length - 1];
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const [plan, allRecipes] = await Promise.all([
-        api.mealPlan.get(),
+        api.mealPlan.get(rangeStart, rangeEnd),
         api.list(),
       ]);
       setPlanData(plan);
@@ -28,9 +48,21 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [rangeStart, rangeEnd]);
 
   useEffect(() => { load(); }, [load]);
+
+  function prevMonth() {
+    setViewed(addMonths(viewYear, viewMonth, -1));
+  }
+
+  function nextMonth() {
+    setViewed(addMonths(viewYear, viewMonth, 1));
+  }
+
+  function goToday() {
+    setViewed(getCurrentYearMonth());
+  }
 
   async function addMeal(day, recipeId) {
     if (isOffline) return;
@@ -52,9 +84,10 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
     }
   }
 
-  function openPicker(day) {
+  function openPicker(day, returnToDaySheet = false) {
     setPickerSearch('');
-    setPicker({ day });
+    setPicker({ day, returnToDaySheet });
+    if (returnToDaySheet) setDaySheet(null);
   }
 
   function closePicker() {
@@ -64,9 +97,18 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
 
   async function pickRecipe(recipeId) {
     if (!picker) return;
-    const day = picker.day;
+    const { day, returnToDaySheet } = picker;
     closePicker();
     await addMeal(day, recipeId);
+    if (returnToDaySheet) setDaySheet(day);
+  }
+
+  function openDaySheet(day) {
+    setDaySheet(day);
+  }
+
+  function closeDaySheet() {
+    setDaySheet(null);
   }
 
   const filteredPickerRecipes = recipes.filter((r) =>
@@ -95,23 +137,23 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
     );
   }
 
-  const week = planData?.week || [];
   const plan = planData?.plan || {};
+  const daySheetEntries = daySheet ? (plan[daySheet] || []) : [];
 
   return (
     <>
-      {/* Plan picker modal */}
+      {/* Recipe picker modal — used for both the desktop "+" and the phone day sheet's "+ Add meal" */}
       {picker && (
         <div
           className="modal-scrim"
           onClick={closePicker}
           role="dialog"
           aria-modal="true"
-          aria-label={`Add to ${shortDayName(picker.day)}`}
+          aria-label={`Add to ${formatSheetDate(picker.day)}`}
         >
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              Add to {shortDayName(picker.day)}
+              Add to {formatSheetDate(picker.day)}
               {picker.day === today ? ' (Today)' : ''}
             </div>
             <div style={{ padding: '8px 12px 0', borderBottom: '1px solid var(--border-light)' }}>
@@ -160,35 +202,125 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
         </div>
       )}
 
+      {/* Phone day sheet — lists a single day's meals with add/remove */}
+      {daySheet && (
+        <div
+          className="modal-scrim"
+          onClick={closeDaySheet}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Meals for ${formatSheetDate(daySheet)}`}
+        >
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              {formatSheetDate(daySheet)}
+              {daySheet === today ? ' · Today' : ''}
+            </div>
+            <div className="modal-body">
+              {daySheetEntries.length === 0 && (
+                <p style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)', font: '400 13px Onest' }}>
+                  No meals planned.
+                </p>
+              )}
+              {daySheetEntries.map((entry) => {
+                if (!entry.recipe) {
+                  return (
+                    <div key={entry.id} className="plan-meal-ph" style={{ opacity: 0.5 }}>
+                      <div style={{ width: 44, height: 44, borderRadius: 8, background: 'var(--fill)' }} />
+                      <div className="plan-meal-title" style={{ color: 'var(--muted)' }}>Removed</div>
+                      <button
+                        className="ph-remove"
+                        onClick={() => removeMeal(entry.id)}
+                        aria-label="Remove"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={entry.id} className="plan-meal-ph" onClick={() => { closeDaySheet(); onOpenRecipe(entry.recipe.id); }}>
+                    <RecipeImage
+                      image={entry.recipe.image}
+                      title={entry.recipe.title}
+                      style={{ width: 44, height: 44, borderRadius: 8, flex: 'none' }}
+                    />
+                    <div className="plan-meal-title">{entry.recipe.title}</div>
+                    <button
+                      className="ph-remove"
+                      onClick={(e) => { e.stopPropagation(); removeMeal(entry.id); }}
+                      aria-label={`Remove ${entry.recipe.title}`}
+                    >
+                      &times;
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ padding: '10px 12px 14px', flex: 'none' }}>
+              <button className="ph-add-meal-btn" onClick={() => openPicker(daySheet, true)}>
+                + Add meal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="page-pad">
-        <div className="eyebrow">This week</div>
+        <div className="plan-month-nav">
+          <button className="plan-nav-btn" onClick={prevMonth} aria-label="Previous month">‹</button>
+          <div className="eyebrow" aria-live="polite" style={{ minWidth: 110, textAlign: 'center' }}>
+            {getMonthLabel(viewYear, viewMonth)}
+          </div>
+          <button className="plan-nav-btn" onClick={nextMonth} aria-label="Next month">›</button>
+          {!isCurrentMonth && (
+            <button className="plan-today-btn" onClick={goToday}>Today</button>
+          )}
+        </div>
         <h1 className="page-title">Meal Plan</h1>
 
-        {/* Desktop 7-col grid */}
-        <div className="week-grid" id="meal-plan-desktop" style={{ display: 'none' }}>
-          <style>{`@media (min-width:768px){#meal-plan-desktop{display:grid}}`}</style>
-          {week.map((day) => {
+        <div className="cal-weekday-row">
+          {WEEKDAY_LABELS.map((label) => (
+            <div key={label} className="cal-weekday">{label}</div>
+          ))}
+        </div>
+
+        {/* Desktop: full month grid with meal thumbnails */}
+        <div className="cal-grid" id="meal-plan-desktop">
+          {gridDates.map((day) => {
             const entries = plan[day] || [];
             const isToday = day === today;
+            const inMonth = isSameMonth(day, viewYear, viewMonth);
+            const visible = entries.slice(0, MAX_VISIBLE_THUMBS);
+            const overflow = entries.length - visible.length;
             return (
-              <div key={day} className={`day-col ${isToday ? 'today' : ''}`}>
-                <div className="day-name">{shortDayName(day)}</div>
-                <div className="day-date">{formatDayDate(day)}</div>
-                {entries.map((entry) => {
+              <div
+                key={day}
+                className={`cal-cell ${isToday ? 'today' : ''} ${inMonth ? '' : 'other-month'}`}
+              >
+                <div className="cal-date-num">{dayNumber(day)}</div>
+                {visible.map((entry) => {
                   if (!entry.recipe) {
                     return (
-                      <div key={entry.id} className="meal-thumb-card" style={{ opacity: 0.5 }}>
-                        <div style={{ height: 60, background: 'var(--fill)' }} />
+                      <div key={entry.id} className="meal-thumb-card cal-thumb" style={{ opacity: 0.5 }}>
+                        <div style={{ height: 26, background: 'var(--fill)' }} />
                         <div className="meal-thumb-title" style={{ color: 'var(--muted)' }}>Removed</div>
+                        <button
+                          className="meal-thumb-remove"
+                          onClick={() => removeMeal(entry.id)}
+                          aria-label="Remove"
+                        >
+                          &times;
+                        </button>
                       </div>
                     );
                   }
                   return (
-                    <div key={entry.id} className="meal-thumb-card" onClick={() => onOpenRecipe(entry.recipe.id)}>
+                    <div key={entry.id} className="meal-thumb-card cal-thumb" onClick={() => onOpenRecipe(entry.recipe.id)}>
                       <RecipeImage
                         image={entry.recipe.image}
                         title={entry.recipe.title}
-                        style={{ height: 60 }}
+                        style={{ height: 26 }}
                       />
                       <div className="meal-thumb-title">{entry.recipe.title}</div>
                       <button
@@ -201,7 +333,20 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
                     </div>
                   );
                 })}
-                <button className="day-add-btn" onClick={() => openPicker(day)} aria-label={`Add meal to ${shortDayName(day)}`}>
+                {overflow > 0 && (
+                  <button
+                    className="cal-more-btn"
+                    onClick={() => openDaySheet(day)}
+                    aria-label={`View all ${entries.length} meals on ${formatSheetDate(day)}`}
+                  >
+                    +{overflow} more
+                  </button>
+                )}
+                <button
+                  className="cal-add-btn"
+                  onClick={() => openPicker(day)}
+                  aria-label={`Add meal to ${formatSheetDate(day)}`}
+                >
                   +
                 </button>
               </div>
@@ -209,50 +354,26 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
           })}
         </div>
 
-        {/* Phone vertical day list */}
-        <div id="meal-plan-phone" style={{ display: 'none', marginTop: 16 }}>
-          <style>{`@media (max-width:767px){#meal-plan-phone{display:block}}`}</style>
-          {week.map((day) => {
+        {/* Phone: compact month grid, tap a day to open the day sheet */}
+        <div className="cal-grid-phone" id="meal-plan-phone">
+          {gridDates.map((day) => {
             const entries = plan[day] || [];
             const isToday = day === today;
+            const inMonth = isSameMonth(day, viewYear, viewMonth);
             return (
-              <div key={day} className="plan-day-row">
-                <div className="plan-day-header" style={isToday ? { color: 'var(--accent)' } : {}}>
-                  <span className="plan-day-name" style={isToday ? { color: 'var(--accent)' } : {}}>
-                    {shortDayName(day)} {isToday ? '· Today' : ''}
-                  </span>
-                  <span className="plan-day-date">{formatDayDate(day)}</span>
-                </div>
-                {entries.map((entry) => {
-                  if (!entry.recipe) {
-                    return (
-                      <div key={entry.id} className="plan-meal-ph" style={{ opacity: 0.5 }}>
-                        <div style={{ width: 44, height: 44, borderRadius: 8, background: 'var(--fill)' }} />
-                        <div className="plan-meal-title" style={{ color: 'var(--muted)' }}>Removed</div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div key={entry.id} className="plan-meal-ph" onClick={() => onOpenRecipe(entry.recipe.id)}>
-                      <RecipeImage
-                        image={entry.recipe.image}
-                        title={entry.recipe.title}
-                        style={{ width: 44, height: 44, borderRadius: 8, flex: 'none' }}
-                      />
-                      <div className="plan-meal-title">{entry.recipe.title}</div>
-                      <button
-                        className="ph-remove"
-                        onClick={(e) => { e.stopPropagation(); removeMeal(entry.id); }}
-                        aria-label={`Remove ${entry.recipe.title}`}
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  );
-                })}
-                <button className="ph-add-meal-btn" onClick={() => openPicker(day)} aria-label={`Add meal to ${shortDayName(day)}`}>
-                  + Add meal
-                </button>
+              <div
+                key={day}
+                className={`cal-cell-phone ${isToday ? 'today' : ''} ${inMonth ? '' : 'other-month'}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => openDaySheet(day)}
+                onKeyDown={(e) => e.key === 'Enter' && openDaySheet(day)}
+                aria-label={`${formatSheetDate(day)}${entries.length ? `, ${entries.length} meal${entries.length > 1 ? 's' : ''} planned` : ', no meals planned'}`}
+              >
+                <div className="cal-date-num">{dayNumber(day)}</div>
+                {entries.length > 0 && (
+                  <div className="cal-dot-count" aria-hidden="true">{entries.length}</div>
+                )}
               </div>
             );
           })}

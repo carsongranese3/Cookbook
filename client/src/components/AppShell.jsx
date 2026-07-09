@@ -50,10 +50,21 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    id: 'history',
+    label: 'History',
+    tabLabel: 'History',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <polyline points="12 8 12 12 14 14"/>
+        <path d="M3.05 11a9 9 0 1 0 .5-3M3 4v4h4"/>
+      </svg>
+    ),
+  },
 ];
 
-// Phone tab order: Home, Plan, Add, List
-const PHONE_ORDER = ['library', 'plan', 'add', 'shopping'];
+// Phone tab order: Home, Plan, Add, List, History (5 tabs, flex:1 each)
+const PHONE_ORDER = ['library', 'plan', 'add', 'shopping', 'history'];
 
 export default function AppShell({ activeTab, onNav, recipeCount, children }) {
   return (

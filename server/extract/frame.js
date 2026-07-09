@@ -35,13 +35,13 @@ function runFfmpeg(args, timeoutMs = 20_000) {
   });
 }
 
-/** Extract one frame at `seconds` into a JPEG data URI, or null on failure. */
-async function grabAt(filePath, seconds) {
+/** Extract one frame (using the given ffmpeg seek args) into a JPEG data URI, or null. */
+async function grabFrame(filePath, seekArgs) {
   const dir = await mkdtemp(join(tmpdir(), 'cookbook-frame-'));
   const out = join(dir, 'frame.jpg');
   try {
     const ok = await runFfmpeg([
-      '-ss', String(seconds),          // input seeking (fast) to the timestamp
+      ...seekArgs,                     // e.g. ['-ss','42'] or ['-sseof','-1.5']
       '-i', filePath,
       '-frames:v', '1',                // grab a single frame
       '-vf', `scale='min(${FRAME_WIDTH},iw)':-2`, // downscale to <=720w, keep aspect
@@ -59,9 +59,11 @@ async function grabAt(filePath, seconds) {
 }
 
 /**
- * Pick a hero frame for the recipe photo. Tries the AI-suggested timestamp
- * first, then a safe fallback near the start (in case the timestamp is out of
- * range or the video is very short). Returns a JPEG data URI, or null.
+ * Pick a hero frame for the recipe photo — biased toward the FINAL plated dish.
+ * Tries the AI-suggested timestamp (the final-result frame) first; if that's
+ * missing/out of range, falls back to a frame ~1.5s before the END of the video
+ * (cooking videos show the finished dish at the end); then a near-start frame as
+ * a last resort. Returns a JPEG data URI, or null.
  *
  * @param {string} filePath  Path to the downloaded/uploaded video.
  * @param {number|null} seconds  AI-suggested hero timestamp in seconds.
@@ -70,11 +72,15 @@ async function grabAt(filePath, seconds) {
 export async function pickHeroFrameDataUri(filePath, seconds) {
   const t = Number(seconds);
   const candidates = [];
-  if (Number.isFinite(t) && t >= 0) candidates.push(t);
-  candidates.push(1.0); // fallback if the AI timestamp misses or is out of range
+  // 1. The AI-chosen "final plated dish" timestamp.
+  if (Number.isFinite(t) && t > 0) candidates.push(['-ss', String(t)]);
+  // 2. Fallback: a frame ~1.5s before the END — the finished dish, not the intro.
+  candidates.push(['-sseof', '-1.5']);
+  // 3. Last resort: a frame just into the video.
+  candidates.push(['-ss', '0.5']);
 
-  for (const c of candidates) {
-    const uri = await grabAt(filePath, c);
+  for (const seek of candidates) {
+    const uri = await grabFrame(filePath, seek);
     if (uri) return uri;
   }
   return null;

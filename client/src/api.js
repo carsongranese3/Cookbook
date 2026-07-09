@@ -33,7 +33,8 @@ export const api = {
 
   // Meal Plan
   mealPlan: {
-    get: () => request('/meal-plan'),
+    get: (start, end) =>
+      request(`/meal-plan${start && end ? `?start=${start}&end=${end}` : ''}`),
     add: (day, recipe_id) =>
       request('/meal-plan', { method: 'POST', body: JSON.stringify({ day, recipe_id }) }),
     remove: (id) => request(`/meal-plan/${id}`, { method: 'DELETE' }),
@@ -61,6 +62,14 @@ export const api = {
     rename:  (id, label)  => request(`/filters/${id}`, { method: 'PATCH', body: JSON.stringify({ label }) }),
     remove:  (id)         => request(`/filters/${id}`, { method: 'DELETE' }),
     reorder: (ids)        => request('/filters/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
+  },
+
+  // Cook History
+  history: {
+    list:   ()        => request('/history'),
+    create: (body)    => request('/history', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id, body) => request(`/history/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    remove: (id)      => request(`/history/${id}`, { method: 'DELETE' }),
   },
 
   // Per-recipe AI filter assignment

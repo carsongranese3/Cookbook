@@ -1,8 +1,27 @@
 import { useState } from 'react';
 
-export default function CookingMode({ recipe, onExit }) {
+/**
+ * CookingMode — full-screen step-by-step cooking guide.
+ *
+ * Props:
+ *   recipe    — the full recipe object
+ *   onExit    — called when the user closes mid-cook (X button) OR finishes on a
+ *               recipe with 0 steps. Does NOT log history.
+ *   onFinish  — optional; called with `recipe` when the user taps Done on the
+ *               final step. App uses this to pre-fill a History entry.
+ *               If omitted, falls back to onExit.
+ */
+export default function CookingMode({ recipe, onExit, onFinish }) {
   const steps = recipe?.steps || [];
   const [stepIndex, setStepIndex] = useState(0);
+
+  function handleFinish() {
+    if (onFinish) {
+      onFinish(recipe);
+    } else {
+      onExit();
+    }
+  }
 
   // Edge case: 0 steps
   if (steps.length === 0) {
@@ -40,7 +59,7 @@ export default function CookingMode({ recipe, onExit }) {
 
   function goNext() {
     if (isLast) {
-      onExit();
+      handleFinish();
     } else {
       setStepIndex((i) => i + 1);
     }
