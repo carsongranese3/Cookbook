@@ -120,3 +120,26 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
 - Existing recipes: a "Change photo" flow (upload your own, or re-pick a frame). New endpoint
   `POST /api/recipes/:id/frames` re-downloads the recipe's source_url and returns candidate frames.
 - Frames are ≤720px JPEG data URIs; only the CHOSEN one is persisted on the recipe (candidates are transient).
+
+## 2026-07-09 — Duplicate recipe saves: guard the client, dedupe the server
+- **Bug:** one AI-extracted draft became 5 identical `recipes` rows (same payload, 9s apart).
+  Not a service-worker replay — the Workbox `runtimeCaching` rule for `/api/recipes` has no
+  `method`, so it defaults to GET and never touches the create POST. `workbox-background-sync`
+  is only a transitive dep of `workbox-build`, never instantiated.
+- **Root cause:** the "Save to library" button in `AddFromVideo.jsx` had no in-flight guard.
+  Each click fired its own `POST /api/recipes`, and the server mints a fresh `randomUUID()` per
+  request with no dedupe. Saves are slow (≈87KB base64 image up, then `loadRecipes()` pulls every
+  recipe with its inline base64 image back down), so the screen stays clickable for seconds after
+  the first save. The user clicked ~5 times, the tab locked up, Chrome was force-quit. The
+  force-quit was a **symptom, not the cause**.
+- **Fix, both layers:**
+  - Client: `saving` state + `useRef` guard; button `disabled` and labelled "Saving…"; Discard
+    disabled mid-save; reset on failure only (matches `RecipeFormScreen.jsx`). The ref matters —
+    a `useState` check alone reads a stale closure value on a fast second click.
+  - Server: `POST /api/recipes` short-circuits when a **non-null** `source_url` was already saved
+    within **60 seconds**, returning the existing recipe as **200** (genuine creates stay **201**).
+- **Rejected:** a `UNIQUE` index on `source_url`. It would permanently block deliberately
+  re-importing the same video as a variant recipe. The time window preserves that flow.
+- Manual entries (`source_url: null`) are never deduped.
+- The 4 duplicate rows were deleted (kept the oldest); `server/cookbook.db.backup-20260709-dupes`
+  holds the pre-cleanup DB and is gitignored via a new `*.db.backup-*` rule.

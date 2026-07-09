@@ -129,7 +129,12 @@ Create a new recipe.
 }
 ```
 
-**Response 201** — the created recipe object (same shape as GET).
+**Response 201** — a new recipe was inserted (the normal case). Returns the created recipe object (same shape as GET).
+
+**Response 200** — a recipe with the same non-null `source_url` was already created within the last 60 seconds, so **no new row is inserted**; the existing recipe is returned unchanged instead. This is an idempotency guard against repeated save clicks / retries (e.g. double-clicking "Save to library" on a slow request). The response body shape is **identical** in both the 200 and 201 case (the full recipe object), so a client can use `.id` either way without checking the status code.
+
+- Manual entries (`source_url` `null` or an empty string) are **never** deduped — they always insert a new row.
+- A deliberate re-import of the same `source_url` **more than 60 seconds later** still creates a new recipe; the window is intentional so a user can save a second variant of the same video later.
 
 **Response 400**
 ```json

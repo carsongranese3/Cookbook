@@ -10,6 +10,7 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+*.db.backup-*
 
 # os
 .DS_Store

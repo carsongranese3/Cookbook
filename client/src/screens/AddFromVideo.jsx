@@ -32,6 +32,8 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
   const [aiStatus, setAiStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [draft, setDraft]       = useState(null);
+  const [saving, setSaving]     = useState(false);
+  const savingRef                = useRef(false);
   const fileRef                 = useRef(null);
   const stopStatus              = useRef(null);
 
@@ -134,6 +136,9 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
   async function saveDraft(checkedFilters) {
     if (!draft) return;
     if (isOffline) { showError("You're offline. Can't save right now."); return; }
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       const payload = {
         title:       (draft.title || '').trim(),
@@ -153,6 +158,8 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
       onSaved(created.id);
     } catch (e) {
       showError(e.message);
+      savingRef.current = false;
+      setSaving(false);
     }
   }
 
@@ -285,13 +292,14 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
           onUpdateStep={updateDraftStep}
           onSave={saveDraft}
           onDiscard={discard}
+          saving={saving}
         />
       )}
     </div>
   );
 }
 
-function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateStep, onSave, onDiscard }) {
+function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateStep, onSave, onDiscard, saving }) {
   // Pre-check filters that the AI suggested (draft.filters is string[])
   const aiSuggested = new Set(Array.isArray(draft.filters) ? draft.filters : []);
   const [checkedFilters, setCheckedFilters] = useState(
@@ -534,8 +542,10 @@ function DraftCard({ draft, userFilters, onUpdateField, onUpdateIng, onUpdateSte
         </div>
 
         <div className="draft-actions">
-          <button className="btn btn-primary" onClick={() => onSave(checkedFilters)}>Save to library</button>
-          <button className="btn btn-secondary" onClick={onDiscard}>Discard</button>
+          <button className="btn btn-primary" onClick={() => onSave(checkedFilters)} disabled={saving}>
+            {saving ? 'Saving…' : 'Save to library'}
+          </button>
+          <button className="btn btn-secondary" onClick={onDiscard} disabled={saving}>Discard</button>
         </div>
       </div>
     </div>

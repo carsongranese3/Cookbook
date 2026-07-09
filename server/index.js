@@ -191,6 +191,25 @@ app.post('/api/recipes', (req, res) => {
   if (!data.title) {
     return res.status(400).json({ error: 'title is required' });
   }
+  // Defense in depth against duplicate saves: if this is an import with a
+  // source_url, and an identical-source recipe was created in the last 60
+  // seconds, treat this as a repeated click / retry rather than a new save.
+  // Manual entries (null/empty source_url) are never deduped. Deliberate
+  // re-imports outside the recency window still create a new recipe.
+  if (typeof data.source_url === 'string' && data.source_url.trim() !== '') {
+    const recentCutoff = new Date(Date.now() - 60_000).toISOString();
+    const existing = db
+      .prepare(
+        `SELECT * FROM recipes
+         WHERE source_url = ? AND created_at >= ?
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .get(data.source_url, recentCutoff);
+    if (existing) {
+      return res.status(200).json(rowToRecipe(existing));
+    }
+  }
   const now = new Date().toISOString();
   const id = randomUUID();
   db.prepare(
