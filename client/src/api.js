@@ -1,0 +1,76 @@
+// Thin wrapper around the backend REST API. Uses relative /api URLs so the
+// Vite dev proxy (and, in production, same-origin hosting) handles routing.
+
+async function request(path, options = {}) {
+  const res = await fetch(`/api${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(body?.error || `Request failed (${res.status})`);
+    err.code = body?.code || null;
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+// ── Recipes ────────────────────────────────────────────────────────────────
+export const api = {
+  // Recipes
+  list: () => request('/recipes'),
+  get: (id) => request(`/recipes/${id}`),
+  create: (recipe) => request('/recipes', { method: 'POST', body: JSON.stringify(recipe) }),
+  update: (id, recipe) => request(`/recipes/${id}`, { method: 'PUT', body: JSON.stringify(recipe) }),
+  remove: (id) => request(`/recipes/${id}`, { method: 'DELETE' }),
+  favorite: (id, value) =>
+    request(`/recipes/${id}/favorite`, {
+      method: 'PATCH',
+      body: JSON.stringify(value !== undefined ? { favorite: value } : {}),
+    }),
+
+  // Meal Plan
+  mealPlan: {
+    get: () => request('/meal-plan'),
+    add: (day, recipe_id) =>
+      request('/meal-plan', { method: 'POST', body: JSON.stringify({ day, recipe_id }) }),
+    remove: (id) => request(`/meal-plan/${id}`, { method: 'DELETE' }),
+  },
+
+  // Shopping List
+  shopping: {
+    get: () => request('/shopping-list'),
+    add: (name, qty = '') =>
+      request('/shopping-list', { method: 'POST', body: JSON.stringify({ name, qty }) }),
+    fromRecipe: (recipeId) =>
+      request(`/shopping-list/from-recipe/${recipeId}`, { method: 'POST' }),
+    toggle: (id) =>
+      request(`/shopping-list/${id}`, { method: 'PATCH', body: JSON.stringify({}) }),
+    update: (id, fields) =>
+      request(`/shopping-list/${id}`, { method: 'PATCH', body: JSON.stringify(fields) }),
+    remove: (id) => request(`/shopping-list/${id}`, { method: 'DELETE' }),
+    clearChecked: () => request('/shopping-list/clear-checked', { method: 'POST' }),
+  },
+
+  // AI Extract
+  extract: {
+    fromUrl: (url) =>
+      request('/extract', { method: 'POST', body: JSON.stringify({ url }) }),
+    fromFile: (file) => {
+      const fd = new FormData();
+      fd.append('video', file);
+      return fetch('/api/extract/upload', { method: 'POST', body: fd }).then(async (res) => {
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+          const err = new Error(body?.error || `Upload failed (${res.status})`);
+          err.code = body?.code || null;
+          err.status = res.status;
+          throw err;
+        }
+        return body;
+      });
+    },
+  },
+};

@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.log
+
+# env / secrets
+.env
+.env.local
+
+# sqlite database files
+*.db
+*.db-shm
+*.db-wal
+
+# os
+.DS_Store
+
+# screenshots dropped in the repo root for review (not part of the app)
+/Screenshot*.png
+
+# yt-dlp cookies (login session — never commit)
+*cookies*.txt
