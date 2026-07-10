@@ -22,6 +22,8 @@ when the user clicks "Save to library".
   "servings":    2,
   "cuisine":     "Italian",
   "category":    "Dinner",
+  "protein":     [],
+  "carb":        ["Pasta"],
   "ingredients": [
     { "name": "spaghetti",          "qty": "8 oz" },
     { "name": "pecorino romano",    "qty": "2 oz" },
@@ -32,7 +34,12 @@ when the user clicks "Save to library".
     "Toast coarsely ground black pepper in a dry skillet over medium heat for 1 minute.",
     "Reserve 1 cup of pasta water, drain, and add spaghetti to the skillet.",
     "Off heat, add cheese and a splash of pasta water, tossing vigorously until creamy."
-  ]
+  ],
+  "stepTimes":       [12.0, 34.5, 78.0, 95.2],
+  "image":           "data:image/jpeg;base64,... or null",
+  "imageCandidates": ["data:image/jpeg;base64,...", "data:image/jpeg;base64,..."],
+  "videoToken":      "uuid string or null",
+  "filters":         ["Quick", "Vegetarian"]
 }
 ```
 
@@ -41,8 +48,13 @@ Field rules:
 - `ingredients[].qty` is a **display string** in imperial units ("2 cups", "1 tbsp", "8 oz", "350°F", or `""` when unknown). Never a parsed number.
 - `ingredients[].name` is a plain string. Order is preserved.
 - `steps` are ordered imperative sentences; step numbers are positional (1-based display).
+- `protein` / `carb` — arrays of the dish's main protein(s)/carb(s) (usually one each); `[]` if the dish has none. Short canonical words (see `server/extract/gemini.js` prompt rule 6).
+- `stepTimes` — number array (seconds), **positionally parallel to `steps`** (same length, padded with `0`). Comes from the SAME single Gemini call as the rest of the recipe (the model's `steps` response items are `{ "text", "t" }` objects; `t` becomes `stepTimes[i]`, `text` becomes `steps[i]`). Clamped to `[0, video duration]` via ffprobe when duration is known. `0` means "not visible in the video," not necessarily "the start."
+- `image` / `imageCandidates` — cover-photo picker fields; see the extraction-module doc below. Transient, ffmpeg-only (no AI call).
+- `videoToken` — references a copy of the downloaded/uploaded video stashed at `server/media/drafts/<videoToken>.mp4`, or `null` if the stash failed (extraction still succeeds regardless — this never blocks a save). Send back as `video_token` on `POST /api/recipes` to claim it; unclaimed drafts are swept after 24h.
+- `filters` — subset of the user's current filter labels (from `GET /api/filters`) that the model judged applicable. Folded into the same single Gemini call, not a second request.
 - `title`, `description`, `cuisine`, `category` default to `""` when unknown — never `null`.
-- The draft carries **no** `id`, `rating`, `favorite`, `image`, `source_url`, `source_caption`, `tags`, `created_at`, or `updated_at` — those are added at persist time by the backend.
+- The draft carries **no** `id`, `rating`, `favorite`, `source_url`, `source_caption`, `tags`, `created_at`, or `updated_at` — those are absent or added at persist time by the backend/client.
 
 ---
 
@@ -67,8 +79,10 @@ the backend. All measurements are **imperial** — no metric values are stored.
 | `tags`           | `string[]`           | `TEXT` (JSON)      | e.g. `["Vegetarian"]`. "Vegetarian" chip matches tag case-insensitively. Default `[]`. |
 | `ingredients`    | `{name,qty}[]`       | `TEXT` (JSON)      | See ingredient shape below. Order preserved. |
 | `steps`          | `string[]`           | `TEXT` (JSON)      | Ordered step text. |
+| `step_times`     | `number[]`           | `TEXT` (JSON)      | Seconds, positionally parallel to `steps`. May be `[]` or shorter than `steps`. Drives Cook Mode's video seek. |
 | `source_url`     | `string \| null`     | `TEXT`             | IG/TikTok link when imported via Path B; `null` otherwise. |
 | `source_caption` | `string \| null`     | `TEXT`             | Raw caption fetched by yt-dlp; `null` otherwise. |
+| `video_file`     | `string \| null`     | `TEXT`             | Bare filename in `server/media/` (e.g. `<id>.mp4`), NOT a path; `null` if no video. **Internal only — never returned by the API.** The API exposes a derived `has_video: boolean` instead (see `GET /api/recipes/:id/video`). |
 | `created_at`     | `string` (ISO 8601)  | `TEXT NOT NULL`    | Set once at creation; never updated. |
 | `updated_at`     | `string` (ISO 8601)  | `TEXT NOT NULL`    | Updated on every PUT. |
 

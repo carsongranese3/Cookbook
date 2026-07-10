@@ -88,7 +88,7 @@ export async function pickHeroFrameDataUri(filePath, seconds) {
  * @param {string} filePath
  * @returns {Promise<number|null>}
  */
-async function probeDuration(filePath) {
+export async function probeDuration(filePath) {
   return new Promise((resolve) => {
     let proc;
     try {

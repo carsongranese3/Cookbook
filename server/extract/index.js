@@ -29,12 +29,43 @@
  * @module server/extract
  */
 
+import { randomUUID }                                             from 'node:crypto';
+import { copyFile, mkdir }                                        from 'node:fs/promises';
+import { dirname, join }                                          from 'node:path';
+import { fileURLToPath }                                          from 'node:url';
 import { downloadVideo }                                          from './ytdlp.js';
 import { extractWithGemini }                                     from './gemini.js';
 import { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
 export { ExtractError, CODES }                                   from './errors.js';
 export { assignFilters }                                         from './gemini.js';
 export { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
+
+// ---------------------------------------------------------------------------
+// Draft video persistence — Cook Mode needs the source video after extraction,
+// but the yt-dlp temp file is always cleaned up. Stash a copy under
+// server/media/drafts/<token>.mp4 so POST /api/recipes can claim it later.
+// ---------------------------------------------------------------------------
+
+const DRAFTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'media', 'drafts');
+
+/**
+ * Copy the just-downloaded/uploaded video into server/media/drafts/ under a
+ * fresh token, so it survives the temp-file cleanup that always follows
+ * extraction. Never throws — extraction must succeed even if this fails.
+ * @param {string} filePath
+ * @returns {Promise<string|null>} the token, or null if the copy failed.
+ */
+async function stashDraftVideo(filePath) {
+  try {
+    await mkdir(DRAFTS_DIR, { recursive: true });
+    const token = randomUUID();
+    await copyFile(filePath, join(DRAFTS_DIR, `${token}.mp4`));
+    return token;
+  } catch (err) {
+    console.warn('[extract] Could not stash draft video for Cook Mode:', err.message);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // JSDoc type (informational — this is plain JS, no TypeScript compiler)
@@ -56,11 +87,18 @@ export { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.j
  * @property {string}           category         e.g. "Dinner", "Breakfast", "Dessert"; empty if unknown.
  * @property {IngredientItem[]} ingredients      Normalized, imperial units.
  * @property {string[]}         steps            Ordered imperative step text.
+ * @property {number[]}         stepTimes        Seconds, positionally parallel to `steps`; same
+ *                                               length as `steps`. `0` for any step whose moment
+ *                                               isn't visible in the video (never fabricated).
  * @property {string|null}      image            Best-guess candidate frame as a JPEG data URI, or null
  *                                               (equals imageCandidates[0] when candidates is non-empty).
  * @property {string[]}         imageCandidates  Ordered array of JPEG data URI candidate frames (≤6),
  *                                               best-guess first. Transient — not persisted to DB.
  *                                               Empty array when no frames could be extracted.
+ * @property {string|null}      videoToken       Token referencing the stashed draft video at
+ *                                               server/media/drafts/<videoToken>.mp4, or null if
+ *                                               the video could not be stashed. Send back as
+ *                                               `video_token` on POST /api/recipes to attach it.
  */
 
 // ---------------------------------------------------------------------------
@@ -84,6 +122,9 @@ export async function extractFromUrl(url, filterLabels = []) {
     draft.imageCandidates = candidates;
     draft.image = candidates[0] ?? null;
     delete draft.heroSeconds;
+    // Stash a copy of the video (before cleanup below deletes the temp file)
+    // so Cook Mode has something to play once the recipe is saved.
+    draft.videoToken = await stashDraftVideo(filePath);
     return draft;
   } finally {
     // Always clean up the temp file, even if extraction fails.
@@ -112,5 +153,7 @@ export async function extractFromFile(filePath, mimeType, filterLabels = []) {
   draft.imageCandidates = candidates;
   draft.image = candidates[0] ?? null;
   delete draft.heroSeconds;
+  // Stash a copy (the caller still owns and deletes the original temp file).
+  draft.videoToken = await stashDraftVideo(filePath);
   return draft;
 }

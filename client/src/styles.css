@@ -1853,6 +1853,64 @@ a:hover { color: var(--accent-dark); }
   .cook-next-btn { flex: 1; height: 50px; border-radius: 13px; justify-content: center; font-size: 15px; }
 }
 
+/* ── Cooking Mode: video pane (desktop two-pane, phone stacked) ──────────── */
+.cook-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.cook-instructions {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cook-video-pane {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  min-width: 0;
+  padding: 20px 30px 20px 0;
+}
+
+.cook-video {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #000;
+}
+
+/* Narrower left column reads better left-aligned than centered. */
+.cook-body--paned {
+  align-items: flex-start;
+  text-align: left;
+  padding: 20px 50px;
+}
+
+@media (max-width: 767px) {
+  .cook-main { flex-direction: column; }
+
+  .cook-video-pane {
+    flex: none;
+    padding: 16px 20px 0;
+    max-height: 40vh;
+  }
+
+  .cook-video { border-radius: 10px; }
+
+  .cook-body--paned {
+    align-items: flex-start;
+    text-align: left;
+    padding: 0 24px;
+  }
+}
+
 /* ── Recipe Form ────────────────────────────────────────────────────────── */
 .recipe-form { display: grid; gap: 20px; }
 

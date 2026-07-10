@@ -28,10 +28,12 @@ db.exec(`
     image          TEXT,
     ingredients    TEXT NOT NULL DEFAULT '[]',  -- JSON [{name,qty}]
     steps          TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
+    step_times     TEXT NOT NULL DEFAULT '[]',  -- JSON number[] (seconds), positionally parallel to steps
     tags           TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
     filters        TEXT NOT NULL DEFAULT '[]',  -- JSON string[] of assigned user filter labels
     source_url     TEXT,
     source_caption TEXT,
+    video_file     TEXT,                        -- bare filename in server/media/, or NULL
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
   );
@@ -63,6 +65,8 @@ const recipeMigrations = [
   // exists as TEXT we leave it (values still read as integers via JS coercion).
   { col: 'servings',       ddl: 'INTEGER' },
   { col: 'filters',        ddl: "TEXT NOT NULL DEFAULT '[]'" },
+  { col: 'step_times',     ddl: "TEXT NOT NULL DEFAULT '[]'" },
+  { col: 'video_file',     ddl: 'TEXT' },
 ];
 
 for (const { col, ddl } of recipeMigrations) {

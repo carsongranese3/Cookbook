@@ -5,10 +5,21 @@ import { MulterError } from 'multer';
 import { randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  renameSync,
+  copyFileSync,
+  createReadStream,
+} from 'node:fs';
 import db from './db.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Load server/.env into process.env (Node >= 20.12). Harmless if absent —
 // AI extract just reports CONFIG until GEMINI_API_KEY is set.
@@ -27,6 +38,93 @@ const upload = multer({
   dest: tmpdir(),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200 MB
 });
+
+// ===========================================================================
+// Video media storage (Cook Mode) — server/media/<recipeId>.mp4, drafts at
+// server/media/drafts/<token>.mp4 until a recipe is saved and claims one.
+// ===========================================================================
+
+const MEDIA_DIR = join(__dirname, 'media');
+const DRAFTS_DIR = join(MEDIA_DIR, 'drafts');
+mkdirSync(DRAFTS_DIR, { recursive: true });
+
+/** Sweep draft videos older than 24h. Simple, synchronous, logged; runs once at boot. */
+function sweepStaleDrafts() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  let entries;
+  try {
+    entries = readdirSync(DRAFTS_DIR);
+  } catch (err) {
+    console.warn('[media] Could not read drafts dir:', err.message);
+    return;
+  }
+  let swept = 0;
+  for (const name of entries) {
+    const p = join(DRAFTS_DIR, name);
+    try {
+      const st = statSync(p);
+      if (st.mtimeMs < cutoff) {
+        unlinkSync(p);
+        swept += 1;
+      }
+    } catch (err) {
+      console.warn(`[media] Could not sweep draft ${name}:`, err.message);
+    }
+  }
+  if (swept > 0) console.log(`[media] Swept ${swept} stale draft video(s).`);
+}
+sweepStaleDrafts();
+
+/** Move (rename, falling back to copy+unlink across devices) src to dest. */
+function moveFile(srcPath, destPath) {
+  try {
+    renameSync(srcPath, destPath);
+  } catch (err) {
+    if (err.code === 'EXDEV') {
+      copyFileSync(srcPath, destPath);
+      unlinkSync(srcPath);
+    } else {
+      throw err;
+    }
+  }
+}
+
+/** A draft token must look like a UUID — defends the drafts dir against path traversal. */
+function isValidToken(token) {
+  return typeof token === 'string' && /^[a-zA-Z0-9-]+$/.test(token);
+}
+
+/**
+ * Claim a draft video (server/media/drafts/<token>.mp4) for a newly-created
+ * recipe, moving it to server/media/<recipeId>.mp4. Returns the bare filename
+ * to store in `video_file`, or null if the token is missing/invalid/the draft
+ * no longer exists. Never throws — a missing video must never block a save.
+ */
+function claimDraftVideo(token, recipeId) {
+  if (!isValidToken(token)) return null;
+  const draftPath = join(DRAFTS_DIR, `${token}.mp4`);
+  if (!existsSync(draftPath)) return null;
+  const finalName = `${recipeId}.mp4`;
+  try {
+    moveFile(draftPath, join(MEDIA_DIR, finalName));
+    return finalName;
+  } catch (err) {
+    console.warn(`[media] Could not claim draft video ${token}:`, err.message);
+    return null;
+  }
+}
+
+/** Delete an orphaned draft video (e.g. the dedupe guard fired, so no recipe claimed it). */
+function discardDraftVideo(token) {
+  if (!isValidToken(token)) return;
+  try {
+    unlinkSync(join(DRAFTS_DIR, `${token}.mp4`));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn(`[media] Could not discard draft video ${token}:`, err.message);
+    }
+  }
+}
 
 // ===========================================================================
 // Helpers
@@ -60,10 +158,12 @@ function rowToRecipe(row) {
     image: row.image ?? null,
     ingredients: safeParse(row.ingredients, []),
     steps: safeParse(row.steps, []),
+    step_times: safeParse(row.step_times, []),
     tags: safeParse(row.tags, []),
     filters: safeParse(row.filters, []),
     source_url: row.source_url ?? null,
     source_caption: row.source_caption ?? null,
+    has_video: Boolean(row.video_file),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -73,8 +173,14 @@ function rowToRecipe(row) {
  * Coerce a request body into clean, storable recipe fields.
  * - ingredients: array of {name, qty} objects; strings or objects are coerced.
  * - tags: array of strings.
+ * - step_times: array of finite non-negative numbers (garbage dropped), positionally
+ *   parallel to steps; may be shorter or [].
  * - minutes/servings: integers (NaN → null).
  * - favorite: boolean → 0/1.
+ *
+ * NOTE: `video_token` (write-only) is deliberately NOT read/returned here — it
+ * is not a persisted column. Route handlers read `body.video_token` directly
+ * and resolve it via claimDraftVideo()/discardDraftVideo().
  */
 function normalizeBody(body = {}) {
   const toIngredients = (v) => {
@@ -98,6 +204,18 @@ function normalizeBody(body = {}) {
     Array.isArray(v)
       ? v.map((s) => String(s).trim()).filter(Boolean)
       : [];
+
+  // step_times: array of finite non-negative numbers; garbage entries are
+  // dropped (not coerced to 0), default [].
+  const toStepTimes = (v) => {
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const item of v) {
+      const n = typeof item === 'number' ? item : parseFloat(item);
+      if (Number.isFinite(n) && n >= 0) out.push(n);
+    }
+    return out;
+  };
 
   // Like toStringArray, but also accepts a single string ("Chicken" -> ["Chicken"]).
   const toStrArr = (v) =>
@@ -130,6 +248,7 @@ function normalizeBody(body = {}) {
     image: body.image ? String(body.image).trim() : null,
     ingredients: toIngredients(body.ingredients),
     steps: toStringArray(body.steps),
+    step_times: toStepTimes(body.step_times),
     tags: toStringArray(body.tags),
     filters: toStringArray(body.filters),
     source_url: body.source_url ? String(body.source_url).trim() : null,
@@ -188,6 +307,7 @@ app.get('/api/recipes/:id', (req, res) => {
 // Create a recipe.
 app.post('/api/recipes', (req, res) => {
   const data = normalizeBody(req.body);
+  const videoToken = req.body?.video_token ? String(req.body.video_token).trim() : null;
   if (!data.title) {
     return res.status(400).json({ error: 'title is required' });
   }
@@ -207,29 +327,34 @@ app.post('/api/recipes', (req, res) => {
       )
       .get(data.source_url, recentCutoff);
     if (existing) {
+      // The recipe already exists — this token would otherwise orphan.
+      if (videoToken) discardDraftVideo(videoToken);
       return res.status(200).json(rowToRecipe(existing));
     }
   }
   const now = new Date().toISOString();
   const id = randomUUID();
+  const videoFile = videoToken ? claimDraftVideo(videoToken, id) : null;
   db.prepare(
     `INSERT INTO recipes
        (id, title, description, cuisine, category, protein, carb, minutes, servings, rating,
-        favorite, image, ingredients, steps, tags, filters, source_url, source_caption,
-        created_at, updated_at)
+        favorite, image, ingredients, steps, step_times, tags, filters, source_url, source_caption,
+        video_file, created_at, updated_at)
      VALUES
        (@id, @title, @description, @cuisine, @category, @protein, @carb, @minutes, @servings,
-        @rating, @favorite, @image, @ingredients, @steps, @tags, @filters,
-        @source_url, @source_caption, @created_at, @updated_at)`
+        @rating, @favorite, @image, @ingredients, @steps, @step_times, @tags, @filters,
+        @source_url, @source_caption, @video_file, @created_at, @updated_at)`
   ).run({
     id,
     ...data,
     ingredients: JSON.stringify(data.ingredients),
     steps: JSON.stringify(data.steps),
+    step_times: JSON.stringify(data.step_times),
     tags: JSON.stringify(data.tags),
     filters: JSON.stringify(data.filters),
     protein: JSON.stringify(data.protein),
     carb: JSON.stringify(data.carb),
+    video_file: videoFile,
     created_at: now,
     updated_at: now,
   });
@@ -264,6 +389,7 @@ app.put('/api/recipes/:id', (req, res) => {
        image = @image,
        ingredients = @ingredients,
        steps = @steps,
+       step_times = @step_times,
        tags = @tags,
        filters = @filters,
        source_url = @source_url,
@@ -275,6 +401,7 @@ app.put('/api/recipes/:id', (req, res) => {
     ...data,
     ingredients: JSON.stringify(data.ingredients),
     steps: JSON.stringify(data.steps),
+    step_times: JSON.stringify(data.step_times),
     tags: JSON.stringify(data.tags),
     filters: JSON.stringify(data.filters),
     protein: JSON.stringify(data.protein),
@@ -287,16 +414,88 @@ app.put('/api/recipes/:id', (req, res) => {
   res.json(rowToRecipe(row));
 });
 
-// Delete a recipe (cascades meal-plan entries via explicit DELETE).
+// Delete a recipe (cascades meal-plan entries via explicit DELETE; also
+// removes its video file, if any).
 app.delete('/api/recipes/:id', (req, res) => {
   const id = req.params.id;
+  const row = db.prepare('SELECT video_file FROM recipes WHERE id = ?').get(id);
   // Cascade: remove any meal-plan assignments for this recipe.
   db.prepare('DELETE FROM meal_plan WHERE recipe_id = ?').run(id);
   const result = db.prepare('DELETE FROM recipes WHERE id = ?').run(id);
   if (result.changes === 0) {
     return res.status(404).json({ error: 'Recipe not found' });
   }
+  if (row?.video_file) {
+    unlink(join(MEDIA_DIR, row.video_file)).catch((err) => {
+      if (err.code !== 'ENOENT') {
+        console.warn(`[media] Could not delete video for ${id}:`, err.message);
+      }
+    });
+  }
   res.status(204).end();
+});
+
+// Stream a recipe's source video (Cook Mode video pane). Supports HTTP Range
+// so <video> can seek — required for per-step timestamp scrubbing.
+app.get('/api/recipes/:id/video', (req, res) => {
+  const row = db.prepare('SELECT video_file FROM recipes WHERE id = ?').get(req.params.id);
+  if (!row || !row.video_file) {
+    return res.status(404).json({ error: 'no video' });
+  }
+
+  const videoPath = join(MEDIA_DIR, row.video_file);
+  let stat;
+  try {
+    stat = statSync(videoPath);
+  } catch {
+    return res.status(404).json({ error: 'no video' });
+  }
+  const total = stat.size;
+
+  const range = req.headers.range;
+  if (!range) {
+    res.writeHead(200, {
+      'Content-Type': 'video/mp4',
+      'Content-Length': total,
+      'Accept-Ranges': 'bytes',
+    });
+    createReadStream(videoPath).pipe(res);
+    return;
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+  if (!match || (match[1] === '' && match[2] === '')) {
+    res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+    return res.end();
+  }
+
+  let start, end;
+  if (match[1] === '') {
+    // Suffix range: "bytes=-500" → last 500 bytes (clamped to the file size).
+    const suffixLength = parseInt(match[2], 10);
+    end = total - 1;
+    start = Math.max(0, total - suffixLength);
+  } else {
+    start = parseInt(match[1], 10);
+    end = match[2] === '' ? total - 1 : parseInt(match[2], 10);
+  }
+
+  if (
+    !Number.isFinite(start) || !Number.isFinite(end) ||
+    start < 0 || end >= total || start > end
+  ) {
+    res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+    return res.end();
+  }
+
+  const chunkSize = end - start + 1;
+  res.writeHead(206, {
+    'Content-Range': `bytes ${start}-${end}/${total}`,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': chunkSize,
+    'Content-Type': 'video/mp4',
+  });
+  createReadStream(videoPath, { start, end }).pipe(res);
 });
 
 // Favorite toggle / set.
@@ -1570,29 +1769,32 @@ app.post('/api/extract-and-save', async (req, res) => {
       .map((r) => r.label);
     const draft = await mod.extractFromUrl(url, filterLabels);
 
-    const data = normalizeBody({ ...draft, source_url: url });
+    const data = normalizeBody({ ...draft, step_times: draft.stepTimes, source_url: url });
     if (!data.title) data.title = 'Imported recipe';
 
     const now = new Date().toISOString();
     const id = randomUUID();
+    const videoFile = draft.videoToken ? claimDraftVideo(draft.videoToken, id) : null;
     db.prepare(
       `INSERT INTO recipes
          (id, title, description, cuisine, category, protein, carb, minutes, servings, rating,
-          favorite, image, ingredients, steps, tags, filters, source_url, source_caption,
-          created_at, updated_at)
+          favorite, image, ingredients, steps, step_times, tags, filters, source_url, source_caption,
+          video_file, created_at, updated_at)
        VALUES
          (@id, @title, @description, @cuisine, @category, @protein, @carb, @minutes, @servings,
-          @rating, @favorite, @image, @ingredients, @steps, @tags, @filters,
-          @source_url, @source_caption, @created_at, @updated_at)`
+          @rating, @favorite, @image, @ingredients, @steps, @step_times, @tags, @filters,
+          @source_url, @source_caption, @video_file, @created_at, @updated_at)`
     ).run({
       id,
       ...data,
       ingredients: JSON.stringify(data.ingredients),
       steps: JSON.stringify(data.steps),
+      step_times: JSON.stringify(data.step_times),
       tags: JSON.stringify(data.tags),
       filters: JSON.stringify(data.filters),
       protein: JSON.stringify(data.protein),
       carb: JSON.stringify(data.carb),
+      video_file: videoFile,
       created_at: now,
       updated_at: now,
     });

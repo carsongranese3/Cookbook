@@ -56,10 +56,12 @@ All recipe responses share the same full recipe object shape (see below).
   "image":          "URL string or null",
   "ingredients":    [{ "name": "spaghetti", "qty": "8 oz" }],
   "steps":          ["Boil water.", "Cook pasta."],
+  "step_times":     [0, 45.5],
   "tags":           ["Italian", "Vegetarian"],
   "filters":        ["Chicken", "Quick"],
   "source_url":     "https://www.tiktok.com/... or null",
   "source_caption": "string or null",
+  "has_video":      true,
   "created_at":     "2026-07-08T12:00:00.000Z",
   "updated_at":     "2026-07-08T12:00:00.000Z"
 }
@@ -71,9 +73,11 @@ Field notes:
 - `favorite` is a boolean.
 - `ingredients` is an array of `{ name: string, qty: string }` objects; `qty` is a display string in **imperial** units ("2 tbsp", "1 cup", "8 oz").
 - `steps` is an ordered array of strings.
+- `step_times` — array of numbers (seconds), **positionally parallel to `steps`** (`step_times[i]` is the video timestamp for `steps[i]`). May be `[]` (no timestamps known — e.g. manually-entered recipes) or shorter than `steps`. `0` means "not visible in the video", not necessarily "the start". Used by Cook Mode to seek the video pane to the current step.
 - `tags` is an array of strings. The "Vegetarian" Library chip matches recipes whose tags contain `"Vegetarian"` (case-insensitive).
 - `filters` is an array of user-defined filter label strings. Each entry must be a label that exists in the `GET /api/filters` list. AI extraction and the `/assign-filters` endpoints populate this automatically; it can also be set manually in `POST`/`PUT` recipe requests.
 - `image` is a URL or `null`; the frontend falls back to a deterministic gradient placeholder.
+- `has_video` — boolean, `true` if the recipe has a source video stored on the server and `GET /api/recipes/:id/video` will return it. Derived from an internal `video_file` column that is **never exposed** in the API response.
 
 ---
 
@@ -122,16 +126,21 @@ Create a new recipe.
   "image":          "URL or null",
   "ingredients":    [{ "name": "string", "qty": "string" }],
   "steps":          ["string"],
+  "step_times":     [0, 45.5],
   "tags":           ["string"],
   "filters":        ["string"],
   "source_url":     "string or null",
-  "source_caption": "string or null"
+  "source_caption": "string or null",
+  "video_token":    "string (optional, write-only — see below)"
 }
 ```
 
+- `step_times` — array of finite non-negative numbers. Garbage entries (non-numeric, negative, `Infinity`/`NaN`) are dropped, not coerced; omit or send `[]` if there are no timestamps. Not required to match `steps.length`.
+- `video_token` — **write-only**, never appears in a response. Comes from a draft's `videoToken` field (see §8). If it references an existing file at `server/media/drafts/<video_token>.mp4`, that file is **moved** to become this recipe's video (`has_video` becomes `true`); if the token is missing, malformed, or the draft file no longer exists (e.g. swept after 24h), the recipe is still saved normally with `has_video: false` — a bad/missing token never fails the save.
+
 **Response 201** — a new recipe was inserted (the normal case). Returns the created recipe object (same shape as GET).
 
-**Response 200** — a recipe with the same non-null `source_url` was already created within the last 60 seconds, so **no new row is inserted**; the existing recipe is returned unchanged instead. This is an idempotency guard against repeated save clicks / retries (e.g. double-clicking "Save to library" on a slow request). The response body shape is **identical** in both the 200 and 201 case (the full recipe object), so a client can use `.id` either way without checking the status code.
+**Response 200** — a recipe with the same non-null `source_url` was already created within the last 60 seconds, so **no new row is inserted**; the existing recipe is returned unchanged instead. This is an idempotency guard against repeated save clicks / retries (e.g. double-clicking "Save to library" on a slow request). The response body shape is **identical** in both the 200 and 201 case (the full recipe object), so a client can use `.id` either way without checking the status code. If a `video_token` was supplied on a request that hit this guard, its draft file is **discarded** (not attached to the pre-existing recipe) rather than left orphaned.
 
 - Manual entries (`source_url` `null` or an empty string) are **never** deduped — they always insert a new row.
 - A deliberate re-import of the same `source_url` **more than 60 seconds later** still creates a new recipe; the window is intentional so a user can save a second variant of the same video later.
@@ -149,7 +158,7 @@ Replace all fields of an existing recipe.
 
 **Path param:** `id` — recipe UUID.
 
-**Request body** — same shape as POST (include `filters` to set assignments explicitly).
+**Request body** — same shape as POST (include `filters` to set assignments explicitly, `step_times` to update timestamps). `video_token` is accepted by the body parser but **PUT does not attach/replace a video** — the existing `video_file` is left untouched regardless of what's in the body. (Only `POST /api/recipes` and `POST /api/extract-and-save` claim a draft video.)
 
 **Response 200** — updated recipe object.
 
@@ -161,13 +170,36 @@ Replace all fields of an existing recipe.
 
 ### `DELETE /api/recipes/:id`
 
-Delete a recipe. Also removes any meal-plan assignments that reference this recipe (cascade).
+Delete a recipe. Also removes any meal-plan assignments that reference this recipe (cascade), and deletes its video file at `server/media/<id>.mp4` if one exists (best-effort; a missing file is not an error).
 
 **Path param:** `id` — recipe UUID.
 
 **Response 204** — no body.
 
 **Response 404** — `{ "error": "Recipe not found" }`
+
+---
+
+### `GET /api/recipes/:id/video`
+
+Stream a recipe's source video (Cook Mode's video pane). Supports HTTP `Range` requests so `<video>` can seek to a step's timestamp without downloading the whole file.
+
+**Path param:** `id` — recipe UUID.
+
+**No `Range` header — Response 200**
+Headers: `Content-Type: video/mp4`, `Content-Length: <bytes>`, `Accept-Ranges: bytes`. Body is the full video.
+
+**With `Range: bytes=<start>-<end>` — Response 206 Partial Content**
+Headers: `Content-Range: bytes <start>-<end>/<total>`, `Accept-Ranges: bytes`, `Content-Length: <chunk size>`, `Content-Type: video/mp4`. Body is just that byte range. Suffix ranges (`bytes=-500`, meaning "last 500 bytes") are also supported.
+
+**Response 404**
+```json
+{ "error": "no video" }
+```
+Returned when the recipe has no video (`has_video: false`) or its file is missing on disk despite the DB pointing at it.
+
+**Response 416 Range Not Satisfiable**
+Header: `Content-Range: bytes */<total>`, no body. Returned for a malformed `Range` header or a range outside `[0, total)`.
 
 ---
 
@@ -909,7 +941,7 @@ Both endpoints return a **draft recipe JSON** that is **not persisted** — the 
 
 ### Draft recipe object
 
-Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time). The `filters` field **is** present — it is populated by AI assignment using the user's current filter list at extraction time. Two additional frame-picker fields are included:
+Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated_at`, `favorite`, `source_url`, or `source_caption` (those are absent or supplied by the frontend at save time). The `filters` field **is** present — it is populated by AI assignment using the user's current filter list at extraction time. A few additional fields (camelCase, matching `imageCandidates`) support the cover-photo picker and Cook Mode's video pane:
 
 ```json
 {
@@ -923,6 +955,8 @@ Same shape as a recipe object (see §2) but without `id`, `created_at`, `updated
   "imageCandidates": ["data:image/jpeg;base64,...", "data:image/jpeg;base64,..."],
   "ingredients":     [{ "name": "string", "qty": "string (imperial)" }],
   "steps":           ["string"],
+  "stepTimes":       [0, 45.5],
+  "videoToken":      "uuid string or null",
   "tags":            [],
   "filters":         ["Chicken", "Quick"]
 }
@@ -934,6 +968,10 @@ Field notes for the frame fields:
 - `imageCandidates` — ordered array of JPEG data URIs (≤6), best-guess first. Extracted with ffmpeg (no AI call). Empty array `[]` if no frames could be grabbed.
 - `image` — equals `imageCandidates[0]` when candidates is non-empty; `null` otherwise.
 - Both fields are **transient** — only the single chosen frame is persisted to the recipe via `PUT /api/recipes/:id` (`image` field).
+
+Field notes for the video/Cook Mode fields:
+- `stepTimes` — number array (seconds), positionally parallel to `steps` (same length; padded with `0` for any step whose moment wasn't identified). Comes from the SAME single Gemini call that extracts the recipe — no extra request. Send it back as `step_times` (snake_case) on `POST /api/recipes` to persist it.
+- `videoToken` — a token referencing a copy of the source video stashed at `server/media/drafts/<videoToken>.mp4` on the server, or `null` if the video couldn't be stashed (extraction still succeeds either way — the recipe just won't have Cook Mode video). Send it back as `video_token` (snake_case) on `POST /api/recipes` to attach the video to the saved recipe. Unclaimed drafts are swept after 24 hours.
 
 ### Extract error object
 

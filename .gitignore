@@ -20,3 +20,6 @@ dist/
 
 # yt-dlp cookies (login session — never commit)
 *cookies*.txt
+
+# recipe video media (Cook Mode) — never enters git
+/server/media/

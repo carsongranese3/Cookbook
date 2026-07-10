@@ -143,3 +143,52 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
 - Manual entries (`source_url: null`) are never deduped.
 - The 4 duplicate rows were deleted (kept the oldest); `server/cookbook.db.backup-20260709-dupes`
   holds the pre-cleanup DB and is gitignored via a new `*.db.backup-*` rule.
+
+## 2026-07-10 — Cook Mode: video pane + per-step timestamps (supersedes the 2026-07-xx "text-only" call)
+- **Supersedes** the earlier "Cooking Mode: build the design's text-only full-screen step mode (no
+  video pane). The earlier idea of a video-beside-steps cook mode is not part of this build."
+  We are now building exactly that: instructions left, source video right, seeking per step.
+- **Timestamps ride the existing single Gemini call.** The model already receives the real video via
+  the Files API and already returns one timestamp (`hero_seconds`, for cover-frame picking). The
+  prompt's `"steps": ["string"]` becomes `[{"text","t"}]`; `coerceDraft` splits that into
+  `steps: string[]` + `stepTimes: number[]`. **Still 1 call per import** — free tier, no billing.
+- **`steps` stays `string[]` in the DB.** Timestamps live in a NEW parallel `step_times` column
+  (JSON number[]). Rejected changing `steps` to `{text,t}` objects: that shape ripples through 7
+  files including both step-editing UIs (`RecipeFormScreen`, `AddFromVideo`) and would drag
+  timestamps into manual recipes that can never have a video. The parallel column touches ~3.
+- **Video is persisted at import.** yt-dlp's temp file was always `rm -rf`'d in a `finally`; now it
+  is stashed to `server/media/drafts/<token>.mp4`, the draft carries a `videoToken`, and saving the
+  recipe moves it to `server/media/<recipe_id>.mp4`. Rejected re-downloading on every Cook Mode open
+  (10–30s stall before you can cook, breaks offline, depends on yt-dlp + IG cookies working that day).
+- **`GET /api/recipes/:id/video` must support HTTP Range (206).** `<video>` cannot seek without it.
+- Deleting a recipe deletes its video file; orphaned drafts are swept.
+- **No timestamp editor** in the AI-draft UI for v1. The video pane has a scrubber, so a slightly
+  wrong `t` costs a drag, not a broken feature. Revisit only if the model proves inaccurate.
+- **Phone is functional-only, deliberately.** Video on top, step below, no design investment — the
+  user is redesigning the entire phone app separately. Backend is fully capable regardless.
+- Existing 14 recipes are backfilled once via a script (re-download + 1 Gemini call each for
+  timestamps against their existing steps). Dead IG links / stale cookies will fail; report, don't fake.
+- `server/media/` is gitignored (video bytes never enter git).
+
+## 2026-07-10 — yt-dlp browser impersonation (curl_cffi) to reduce IG/TikTok bot-blocks
+- **Problem:** Instagram/TikTok began 404-ing / IP-blocking the server's yt-dlp downloads
+  (recipe imports fail with "Could not read that video"). Logs showed
+  `attempting impersonation, but no impersonate target is available` — yt-dlp couldn't disguise
+  its TLS/HTTP fingerprint as a browser because `curl_cffi` wasn't installed.
+- **Fix (env):** installed `curl_cffi` into the yt-dlp Homebrew formula's own venv:
+  `~/.homebrew/Cellar/yt-dlp/<ver>/libexec/bin/python -m pip install --no-cache-dir curl_cffi`.
+  `yt-dlp --list-impersonate-targets` then lists 37 targets. The launchd service
+  (`com.cookbook.server`) resolves to `~/.homebrew/bin/yt-dlp` (its plist PATH has no
+  `/opt/homebrew/bin/yt-dlp` shadowing it), so the service sees the capability. No plist change.
+- **Fix (code):** `server/extract/ytdlp.js` passes `--impersonate chrome` (generic alias — auto-picks
+  best available Chrome target, won't go stale) on its yt-dlp calls, with a **graceful fallback**:
+  if a call fails because impersonation is unavailable, retry WITHOUT the flag so imports degrade to
+  prior behavior instead of breaking entirely.
+- **CAVEAT (must remember):** a future `brew upgrade yt-dlp` / `brew reinstall yt-dlp` recreates the
+  Cellar venv and **wipes curl_cffi** → impersonation silently regresses until the pip install above
+  is re-run. The code fallback keeps imports working (un-impersonated) if that happens.
+- **Limit:** impersonation stops the server from *looking* like a bot; it does NOT punch through an
+  IP that is *already* actively blocked. Recovery from an active block still needs a cooled-down IP
+  or "upload the file instead" (which bypasses yt-dlp entirely).
+- Incident note: the active block that surfaced this was triggered by an agent's burst of yt-dlp
+  probe requests against IG during feature testing — pace/avoid live IG/TikTok requests in tooling.

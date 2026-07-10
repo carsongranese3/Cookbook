@@ -140,6 +140,17 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
     savingRef.current = true;
     setSaving(true);
     try {
+      // Keep steps and their per-step video timestamps index-aligned when
+      // dropping blank steps, so step_times[i] still matches steps[i] server-side.
+      const draftTimes = Array.isArray(draft.stepTimes) ? draft.stepTimes : [];
+      const steps = [];
+      const stepTimes = [];
+      (draft.steps || []).forEach((s, i) => {
+        if (s?.trim()) {
+          steps.push(s);
+          stepTimes.push(Number.isFinite(draftTimes[i]) ? draftTimes[i] : 0);
+        }
+      });
       const payload = {
         title:       (draft.title || '').trim(),
         description: (draft.description || '').trim(),
@@ -149,9 +160,11 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
         servings:    draft.servings ? parseInt(draft.servings, 10) : null,
         image:       draft.image || null,
         ingredients: (draft.ingredients || []).filter((i) => i.name?.trim()),
-        steps:       (draft.steps || []).filter((s) => s?.trim()),
+        steps,
+        step_times:  stepTimes,
         tags:        draft.tags || [],
         source_url:  draft._sourceUrl || null,
+        video_token: draft.videoToken || null,
         filters:     [...checkedFilters],
       };
       const created = await api.create(payload);

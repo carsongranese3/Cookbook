@@ -35,7 +35,12 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^\/api\/recipes/,
+            // Excludes /api/recipes/:id/video on purpose — that route streams
+            // with HTTP Range support for <video> seeking, and a service worker
+            // intercepting/caching range requests interacts badly with that.
+            // Video stays network-only (won't play offline; accepted tradeoff).
+            urlPattern: ({ url }) =>
+              /^\/api\/recipes/.test(url.pathname) && !/\/video$/.test(url.pathname),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-recipes',

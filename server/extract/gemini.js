@@ -18,6 +18,7 @@
 
 import { stat }              from 'node:fs/promises';
 import { ExtractError, CODES } from './errors.js';
+import { probeDuration }     from './frame.js';
 
 // ---------------------------------------------------------------------------
 // assignFilters — lightweight text-only Gemini call
@@ -186,19 +187,20 @@ Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no
   "carb": ["string — main carb(s); usually one, list multiple if the dish genuinely has more"],
   "hero_seconds": 0,${filtersShapeLine}
   "ingredients": [{ "name": "string", "qty": "string" }],
-  "steps": ["string"]
+  "steps": [{ "text": "string", "t": 0 }]
 }
 
 Rules you must follow:
 1. CONVERT ALL MEASUREMENTS TO IMPERIAL. Weights → oz or lb. Volumes → cups, tbsp, tsp, or fl oz. Oven temperatures → °F. Lengths → inches. For dry goods given in grams, use standard culinary volume equivalents (e.g. 120 g flour ≈ 1 cup; 15 g butter ≈ 1 tbsp). For liquids given in ml, convert directly (240 ml ≈ 1 cup; 15 ml ≈ 1 tbsp; 5 ml ≈ 1 tsp). Amounts should be estimates the user can correct.
 2. The caption/description and author comments above OFTEN contain the full written recipe. Treat them as a PRIMARY source: if ingredients, quantities, or steps are written there, use them (reconciled with what the video shows) rather than guessing. Prefer written amounts over estimating from the video.
 3. Do NOT invent ingredients. Only include what is shown, said, or written in the caption. If something is unclear, omit it rather than guess. If no recipe can be identified, return {"title":"","description":"","minutes":0,"servings":0,"cuisine":"","category":"","protein":[],"carb":[],"hero_seconds":0,"ingredients":[],"steps":[]}.
-4. Target 5–9 ingredients and 4–7 concise imperative steps (e.g. "Mix flour and butter until crumbly.").
+4. Target 5–9 ingredients and 4–7 concise imperative steps (e.g. "Mix flour and butter until crumbly."). Each step is an object { "text": "...", "t": 0 } — "text" is the imperative instruction.
 5. "qty" is a display string like "2 cups", "1 tbsp", "1 lb", "350°F", or "" if unknown.
 6. "protein" and "carb" are ARRAYS of the dish's MAIN protein(s) and MAIN carb(s) — the defining ingredients, not incidental ones (an omelette's protein is ["Egg"]; banana bread's protein is [] even though it contains eggs). USUALLY ONE each, but include multiple when the dish genuinely centers on more than one (surf & turf → ["Beef","Shrimp"]; a bowl served over both rice and noodles → ["Rice","Noodles"]). Use short canonical words (Chicken, Beef, Pork, Turkey, Lamb, Shrimp, Fish, Tofu, Egg, Beans; Rice, Noodles, Pasta, Bread, Potato, Quinoa, Couscous). Empty array [] if the dish has no main protein or no main carb.
 7. "minutes" and "servings" must be integers (not strings, not null). Default to 0 if unknown.
 8. "hero_seconds": the timestamp in SECONDS (decimals allowed) of the frame showing the FINISHED, fully PLATED final dish — the completed result, NOT a cooking step, raw ingredients, or a mid-process shot. In cooking videos this is almost always near the END (the final reveal / beauty shot of the plated food). Choose the clearest, most appetizing frame of the completed dish. Use 0 only if the video truly never shows a finished plated result.
-9. Return nothing outside the JSON object.${filtersRule}`;
+9. Each step's "t" is the START of that step's segment in the video — the timestamp in SECONDS (decimals allowed) where the ingredients or actions for THAT step FIRST begin to appear on screen, such that starting playback at "t" shows the entire step performed from its beginning. Do NOT use the moment the step's main action peaks or a single verb happens (e.g. for "Whisk together lemon juice, zest, honey and garlic," "t" is when those ingredients first start going into the bowl, NOT when whisking starts). Timestamps must be non-decreasing across steps (each step's "t" >= the previous step's "t"). Use 0 only if the step's segment truly isn't shown in the video.
+10. Return nothing outside the JSON object.${filtersRule}`;
 }
 
 const RETRY_PROMPT =
@@ -277,11 +279,29 @@ function coerceDraft(raw) {
     })
     .filter((item) => item !== null && item.name.length > 0);
 
-  // Normalize steps: each item must be a non-empty string.
+  // Normalize steps: accept EITHER the new { text, t } object shape OR a
+  // legacy plain string (fallback models in the chain may not comply).
+  // steps/stepTimes are built in lockstep so they stay the same length.
+  const stepTime = (v) => {
+    const n = parseFloat(String(v ?? ''));
+    return isFinite(n) && n >= 0 ? n : 0;
+  };
   const rawSteps = Array.isArray(obj.steps) ? obj.steps : [];
-  const steps = rawSteps
-    .map((s) => (typeof s === 'string' ? s.trim() : String(s ?? '').trim()))
-    .filter(Boolean);
+  const steps = [];
+  const stepTimes = [];
+  for (const item of rawSteps) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const text = str(item.text);
+      if (!text) continue;
+      steps.push(text);
+      stepTimes.push(stepTime(item.t));
+    } else if (typeof item === 'string') {
+      const text = item.trim();
+      if (!text) continue;
+      steps.push(text);
+      stepTimes.push(0);
+    }
+  }
 
   return {
     title:       str(obj.title),
@@ -296,6 +316,7 @@ function coerceDraft(raw) {
     filters: strArr(obj.filters),
     ingredients,
     steps,
+    stepTimes,
   };
 }
 
@@ -548,6 +569,18 @@ export async function extractWithGemini(filePath, mimeType, caption = '', filter
   const draft = coerceDraft(parsed);
   // Fold filter assignment into this single call: keep only labels from the user's list.
   draft.filters = canonicalizeLabels(draft.filters, filterLabels);
+
+  // Clamp step timestamps to the video's actual duration when known (ffprobe
+  // only — no extra Gemini call). Non-finite/negative values are already
+  // coerced to 0 by coerceDraft; this just bounds the upper end.
+  try {
+    const duration = await probeDuration(filePath);
+    if (duration != null) {
+      draft.stepTimes = draft.stepTimes.map((t) => Math.min(t, duration));
+    }
+  } catch {
+    // probeDuration never rejects, but stay defensive — clamping is best-effort.
+  }
 
   // ── Guard: no recipe detected ─────────────────────────────────────────────
   if (draft.ingredients.length === 0 && draft.steps.length === 0) {

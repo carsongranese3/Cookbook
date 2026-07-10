@@ -67,14 +67,27 @@ export function validateUrl(url) {
 // ---------------------------------------------------------------------------
 
 /**
- * Spawn yt-dlp and collect stdout / stderr.
+ * Returns true if a yt-dlp failure looks like "impersonation is unavailable"
+ * (e.g. curl_cffi was removed from the venv by a `brew upgrade`), as opposed
+ * to any other failure (404, blocked, timeout, etc.) which must propagate.
+ * Matches case-insensitively on "impersonat" + ("not available" | "unavailable").
+ * @param {string} message
+ * @returns {boolean}
+ */
+function isImpersonationUnavailable(message) {
+  const lower = (message || '').toLowerCase();
+  return lower.includes('impersonat') && (lower.includes('not available') || lower.includes('unavailable'));
+}
+
+/**
+ * Low-level spawn of yt-dlp with the exact args given.
  * Resolves with { stdout, stderr } or rejects on non-zero exit.
  *
  * @param {string[]} args
  * @param {{ timeoutMs?: number }} [opts]
  * @returns {Promise<{ stdout: string, stderr: string }>}
  */
-function runYtdlp(args, { timeoutMs = 120_000 } = {}) {
+function spawnYtdlp(args, { timeoutMs = 120_000 } = {}) {
   return new Promise((resolve, reject) => {
     let proc;
     try {
@@ -132,6 +145,34 @@ function runYtdlp(args, { timeoutMs = 120_000 } = {}) {
       );
     });
   });
+}
+
+/**
+ * Run yt-dlp with browser impersonation applied uniformly to every call site.
+ * Prepends `--impersonate chrome` (the generic alias, so it auto-selects the
+ * best available target rather than a pinned version that can go stale).
+ *
+ * Graceful fallback: if curl_cffi is missing from the yt-dlp install (e.g. a
+ * `brew upgrade yt-dlp` recreated the venv), yt-dlp errors with something like
+ * "Impersonate target is not available". In that case only, retry the exact
+ * same call once WITHOUT `--impersonate` so imports keep working. Any other
+ * failure (404, blocked, timeout, etc.) propagates unchanged.
+ *
+ * @param {string[]} args
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ stdout: string, stderr: string }>}
+ */
+async function runYtdlp(args, opts = {}) {
+  const impersonatedArgs = ['--impersonate', 'chrome', ...args];
+  try {
+    return await spawnYtdlp(impersonatedArgs, opts);
+  } catch (err) {
+    if (err instanceof ExtractError && isImpersonationUnavailable(err.message)) {
+      console.warn('[ytdlp] --impersonate chrome unavailable, retrying without impersonation:', err.message);
+      return spawnYtdlp(args, opts);
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
