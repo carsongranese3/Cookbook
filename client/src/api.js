@@ -43,8 +43,11 @@ export const api = {
   // Shopping List
   shopping: {
     get: () => request('/shopping-list'),
-    add: (name, qty = '') =>
-      request('/shopping-list', { method: 'POST', body: JSON.stringify({ name, qty }) }),
+    add: (name, qty = '', category) =>
+      request('/shopping-list', {
+        method: 'POST',
+        body: JSON.stringify({ name, qty, ...(category ? { category } : {}) }),
+      }),
     fromRecipe: (recipeId) =>
       request(`/shopping-list/from-recipe/${recipeId}`, { method: 'POST' }),
     toggle: (id) =>

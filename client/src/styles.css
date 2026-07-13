@@ -1594,12 +1594,18 @@ a:hover { color: var(--accent-dark); }
 
 .shop-list { margin-top: 18px; }
 
+/* Row metrics match .pantry-row so both screens read the same */
 .shop-item {
   display: flex;
   align-items: center;
-  gap: 13px;
-  padding: 12px 2px;
+  gap: 10px;
+  padding: 9px 2px;
   border-bottom: 1px solid var(--border-light);
+  min-height: 42px;
+}
+
+.shop-item:last-child {
+  border-bottom: none;
 }
 
 .shop-checkbox {
@@ -1623,8 +1629,8 @@ a:hover { color: var(--accent-dark); }
 
 .shop-item-name {
   flex: 1;
-  font: 400 13px 'Onest';
-  color: var(--body);
+  font: 500 14px 'Onest';
+  color: var(--text);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1638,8 +1644,9 @@ a:hover { color: var(--accent-dark); }
 
 .shop-item-qty {
   font: 400 12px 'Onest';
-  color: var(--label);
+  color: var(--muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .shop-item-delete {
@@ -2983,6 +2990,12 @@ a:hover { color: var(--accent-dark); }
 
 .pantry-row:last-child {
   border-bottom: none;
+}
+
+.pantry-empty-hint {
+  font: 400 13px 'Onest';
+  color: var(--muted);
+  padding: 9px 2px;
 }
 
 .pantry-row-name {
