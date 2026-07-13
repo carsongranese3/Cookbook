@@ -90,9 +90,9 @@ export default function AppShell({ activeTab, onNav, recipeCount, children }) {
           aria-label="Cookbook home"
         >
           <div className="sidebar-logo" aria-hidden="true">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" aria-hidden="true">
-              <path d="M4 3h16v4a4 4 0 01-4 4H8a4 4 0 01-4-4V3z"/>
-              <path d="M4 11v10M20 11v10"/>
+            <svg width="17" height="17" viewBox="0 0 64 64" aria-hidden="true">
+              <path d="M31 21C24 16 15.5 16 12.5 17L12.5 45.5C15.5 44.5 24 44.5 31 49.5Z" fill="#fff"/>
+              <path d="M33 21C40 16 48.5 16 51.5 17L51.5 45.5C48.5 44.5 40 44.5 33 49.5Z" fill="#fff"/>
             </svg>
           </div>
           <span className="sidebar-wordmark">The Cookbook</span>

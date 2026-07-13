@@ -74,7 +74,7 @@ a:hover { color: var(--accent-dark); }
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: var(--text);
+  background: var(--accent);
   display: flex;
   align-items: center;
   justify-content: center;

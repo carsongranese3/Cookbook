@@ -334,8 +334,8 @@ export default function PantryScreen({ isOffline }) {
           </div>
         </div>
 
-        {/* Phone: search + add */}
-        <div className="phone-block" style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Phone: search + add (hidden on desktop, where the header controls show) */}
+        <div className="phone-block" style={{ marginTop: 14 }}>
           <div className="search-box" style={{ borderRadius: 12, height: 42 }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a8a29a" strokeWidth="2" aria-hidden="true">
               <circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>
@@ -349,7 +349,7 @@ export default function PantryScreen({ isOffline }) {
           </div>
           <button
             className="btn btn-primary"
-            style={{ width: '100%' }}
+            style={{ width: '100%', marginTop: 10 }}
             onClick={openAdd}
             disabled={isOffline}
           >
