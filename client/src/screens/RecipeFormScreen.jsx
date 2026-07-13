@@ -28,6 +28,16 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
     (recipe?.steps && recipe.steps.length > 0) ? [...recipe.steps] : ['']
   );
 
+  // Step video times: array of strings (seconds), index-aligned with steps
+  const [stepTimes, setStepTimes] = useState(
+    (recipe?.steps && recipe.steps.length > 0)
+      ? recipe.steps.map((_, i) => {
+          const t = recipe?.step_times?.[i];
+          return (typeof t === 'number' && Number.isFinite(t)) ? String(t) : '';
+        })
+      : ['']
+  );
+
   // Tags
   const [tags, setTags]         = useState(recipe?.tags || []);
   const [tagInput, setTagInput] = useState('');
@@ -80,10 +90,20 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
 
   function addStep() {
     setSteps((prev) => [...prev, '']);
+    setStepTimes((prev) => [...prev, '']);
   }
 
   function removeStep(i) {
     setSteps((prev) => prev.filter((_, idx) => idx !== i));
+    setStepTimes((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function updateStepTime(i, val) {
+    setStepTimes((prev) => {
+      const next = [...prev];
+      next[i] = val;
+      return next;
+    });
   }
 
   // ── Tag helpers ─────────────────────────────────────────────────────────
@@ -129,6 +149,16 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
     setSaving(true);
     setError('');
     try {
+      const cleanSteps = [];
+      const cleanStepTimes = [];
+      steps.forEach((s, i) => {
+        if (s.trim()) {
+          cleanSteps.push(s);
+          const t = parseFloat(stepTimes[i]);
+          cleanStepTimes.push(Number.isFinite(t) && t >= 0 ? t : 0);
+        }
+      });
+
       const data = {
         title:        title.trim(),
         description:  description.trim(),
@@ -140,7 +170,8 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
         image:        image.trim() || null,
         source_url:   sourceUrl.trim() || null,
         ingredients:  ingredients.filter((i) => i.name.trim()),
-        steps:        steps.filter((s) => s.trim()),
+        steps:        cleanSteps,
+        step_times:   cleanStepTimes,
         tags,
         filters:      [...checkedFilters],
       };
@@ -312,9 +343,14 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
         {/* Steps */}
         <div className="form-group">
           <div className="form-label">Method</div>
+          {recipe?.has_video && (
+            <p className="form-hint" style={{ margin: '0 0 8px' }}>
+              Video time (seconds) each step starts — tune if the AI's timing is off.
+            </p>
+          )}
           <div className="steps-edit-area">
             {steps.map((step, i) => (
-              <div key={i} className="step-edit-row">
+              <div key={i} className={`step-edit-row${recipe?.has_video ? ' has-time' : ''}`}>
                 <div className="step-edit-num">{i + 1}</div>
                 <textarea
                   className="form-textarea"
@@ -325,6 +361,21 @@ export default function RecipeFormScreen({ recipe, onSave, onCancel, embedded })
                   aria-label={`Step ${i + 1}`}
                   style={{ resize: 'none' }}
                 />
+                {recipe?.has_video && (
+                  <div className="step-time-field">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      className="step-time-input"
+                      value={stepTimes[i] ?? ''}
+                      onChange={(e) => updateStepTime(i, e.target.value)}
+                      placeholder="0.0"
+                      aria-label={`Step ${i + 1} video time in seconds`}
+                    />
+                    <span className="step-time-suffix">sec</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   className="ing-remove-btn"

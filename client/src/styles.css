@@ -2023,6 +2023,36 @@ a:hover { color: var(--accent-dark); }
   margin-top: 8px;
 }
 
+.step-edit-row.has-time {
+  grid-template-columns: 24px 1fr 100px 28px;
+}
+
+.step-time-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.step-time-input {
+  font: 400 13px 'Onest';
+  padding: 8px 9px;
+  border: 1.5px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--body);
+  width: 76px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.step-time-input:focus { border-color: var(--accent); }
+
+.step-time-suffix {
+  font: 500 11px 'Onest';
+  color: var(--muted);
+}
+
 .form-actions {
   display: flex;
   gap: 10px;
