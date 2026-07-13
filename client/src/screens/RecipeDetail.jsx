@@ -120,11 +120,11 @@ export default function RecipeDetail({
     setListMsg('');
     try {
       const result = await onAddToList();
-      const added   = result?.added?.length ?? 0;
-      const skipped = result?.skipped ?? 0;
+      const added  = result?.added?.length ?? 0;
+      const merged = result?.merged ?? result?.skipped ?? 0;
       setListMsg(
-        skipped > 0
-          ? `Added ${added} item${added !== 1 ? 's' : ''} (${skipped} already on list).`
+        merged > 0
+          ? `Added ${added} item${added !== 1 ? 's' : ''} (${merged} updated on list).`
           : `Added ${added} item${added !== 1 ? 's' : ''} to your shopping list.`
       );
       setTimeout(() => setListMsg(''), 3500);

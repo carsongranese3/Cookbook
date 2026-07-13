@@ -18,6 +18,7 @@ import {
   createReadStream,
 } from 'node:fs';
 import db from './db.js';
+import { toStoreQuantity, parseRequired, computeBuyAmount, isBumpable } from './storeQty.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -74,6 +75,24 @@ function sweepStaleDrafts() {
   if (swept > 0) console.log(`[media] Swept ${swept} stale draft video(s).`);
 }
 sweepStaleDrafts();
+
+// Backfill shopping-list rows still at the default 'Other' (older rows from
+// before the category column). Only touches 'Other' rows, so a category a user
+// explicitly chose in the add dialog is never overwritten.
+try {
+  const rows = db.prepare("SELECT id, name FROM shopping_list WHERE category = 'Other'").all();
+  if (rows.length) {
+    const upd = db.prepare('UPDATE shopping_list SET category = ? WHERE id = ?');
+    db.transaction((list) => {
+      for (const r of list) {
+        const c = guessCategory(r.name);
+        if (c !== 'Other') upd.run(c, r.id);
+      }
+    })(rows);
+  }
+} catch (err) {
+  console.warn('[shopping] category backfill failed:', err.message);
+}
 
 /** Move (rename, falling back to copy+unlink across devices) src to dest. */
 function moveFile(srcPath, destPath) {
@@ -1028,6 +1047,7 @@ function rowToShoppingItem(row) {
     qty: row.qty ?? '',
     checked: row.checked === 1,
     position: row.position,
+    category: row.category ?? 'Other',
   };
 }
 
@@ -1050,10 +1070,14 @@ app.post('/api/shopping-list', (req, res) => {
     .get();
   const position = (maxPos?.mp ?? -1) + 1;
 
+  // Use the caller's explicit category if given; otherwise classify by name.
+  const providedCategory = String(req.body?.category ?? '').trim();
+  const category = providedCategory || guessCategory(name);
+
   const id = randomUUID();
   db.prepare(
-    'INSERT INTO shopping_list (id, name, qty, checked, position) VALUES (?, ?, ?, 0, ?)'
-  ).run(id, name, qty, position);
+    'INSERT INTO shopping_list (id, name, qty, checked, position, category) VALUES (?, ?, ?, 0, ?, ?)'
+  ).run(id, name, qty, position, category);
 
   const row = db
     .prepare('SELECT * FROM shopping_list WHERE id = ?')
@@ -1062,7 +1086,9 @@ app.post('/api/shopping-list', (req, res) => {
 });
 
 // POST /api/shopping-list/from-recipe/:recipeId
-// Append a recipe's ingredients, de-duped by case-insensitive name.
+// Add a recipe's ingredients. Items already on the list ACCUMULATE the recipe's
+// required amount (hidden), bumping the visible buy amount when the total
+// outgrows what's already in the cart (see storeQty.js).
 app.post('/api/shopping-list/from-recipe/:recipeId', (req, res) => {
   const recipe = db
     .prepare('SELECT ingredients FROM recipes WHERE id = ?')
@@ -1071,52 +1097,74 @@ app.post('/api/shopping-list/from-recipe/:recipeId', (req, res) => {
 
   const recipeIngredients = safeParse(recipe.ingredients, []);
 
-  // Fetch existing names (lowercase) for de-dupe check.
-  const existingRows = db
-    .prepare('SELECT name FROM shopping_list')
-    .all();
-  const existingNames = new Set(existingRows.map((r) => r.name.toLowerCase()));
-
-  // Get current max position
-  let maxPos = (
-    db
-      .prepare('SELECT COALESCE(MAX(position), -1) as mp FROM shopping_list')
-      .get()?.mp ?? -1
-  );
-
-  const added = [];
-  const insertStmt = db.prepare(
-    'INSERT INTO shopping_list (id, name, qty, checked, position) VALUES (?, ?, ?, 0, ?)'
-  );
-  const insertMany = db.transaction((items) => {
-    for (const item of items) {
-      insertStmt.run(item.id, item.name, item.qty, item.position);
-      added.push(item);
-    }
-  });
-
-  const toInsert = [];
-  for (const ing of recipeIngredients) {
-    const nameLower = (ing.name ?? '').toLowerCase();
-    if (!nameLower || existingNames.has(nameLower)) continue;
-    existingNames.add(nameLower); // guard against duplicates within the same recipe
-    maxPos += 1;
-    toInsert.push({
-      id: randomUUID(),
-      name: ing.name,
-      qty: ing.qty ?? '',
-      position: maxPos,
-    });
+  // Map existing shopping rows by lowercase name so we can accumulate onto them.
+  const existing = new Map();
+  for (const r of db.prepare('SELECT * FROM shopping_list').all()) {
+    existing.set(r.name.toLowerCase(), r);
   }
-  insertMany(toInsert);
+  let maxPos =
+    db.prepare('SELECT COALESCE(MAX(position), -1) as mp FROM shopping_list').get()?.mp ?? -1;
 
-  // Return all newly added items
-  const addedItems = added.map((item) =>
-    rowToShoppingItem(
-      db.prepare('SELECT * FROM shopping_list WHERE id = ?').get(item.id)
-    )
+  const insertStmt = db.prepare(
+    'INSERT INTO shopping_list (id, name, qty, checked, position, category, req_base, req_dim) VALUES (?, ?, ?, 0, ?, ?, ?, ?)'
   );
-  res.status(201).json({ added: addedItems, skipped: recipeIngredients.length - added.length });
+  const updateStmt = db.prepare(
+    'UPDATE shopping_list SET qty = ?, req_base = ?, req_dim = ? WHERE id = ?'
+  );
+
+  // Leading numeric value of a buy string ("2 bottles" → 2, "" → 0), used to
+  // guarantee an accumulation never *decreases* a shown amount.
+  const leadingNum = (s) => {
+    const m = String(s ?? '').match(/^\s*(\d*\.?\d+)/);
+    return m ? parseFloat(m[1]) : (String(s ?? '').trim() ? 1 : 0);
+  };
+
+  const addedIds = [];
+  let merged = 0;
+
+  db.transaction(() => {
+    for (const ing of recipeIngredients) {
+      const name = String(ing.name ?? '').trim();
+      const key = name.toLowerCase();
+      if (!key) continue;
+
+      const { base, dim } = parseRequired(ing.qty);
+      const row = existing.get(key);
+
+      if (row) {
+        // Accumulate required amount (only same-dimension amounts combine).
+        let newBase = row.req_base || 0;
+        let newDim = row.req_dim || '';
+        if (!newDim || newDim === dim) {
+          newBase += base;
+          newDim = newDim || dim;
+        }
+        // Recompute the buy amount for bumpable items; never decrease it.
+        let newQty = row.qty;
+        if (isBumpable(name, newDim)) {
+          const candidate = computeBuyAmount(name, newBase, newDim, ing.qty);
+          if (leadingNum(candidate) > leadingNum(row.qty)) newQty = candidate;
+        }
+        updateStmt.run(newQty, newBase, newDim, row.id);
+        existing.set(key, { ...row, qty: newQty, req_base: newBase, req_dim: newDim });
+        merged += 1;
+      } else {
+        maxPos += 1;
+        const id = randomUUID();
+        const qty = computeBuyAmount(name, base, dim, ing.qty);
+        const category = guessCategory(name);
+        insertStmt.run(id, name, qty, maxPos, category, base, dim);
+        existing.set(key, { id, name, qty, req_base: base, req_dim: dim, category });
+        addedIds.push(id);
+      }
+    }
+  })();
+
+  const addedItems = addedIds.map((id) =>
+    rowToShoppingItem(db.prepare('SELECT * FROM shopping_list WHERE id = ?').get(id))
+  );
+  // `skipped` retained for backward-compatible clients; equals the merged count.
+  res.status(201).json({ added: addedItems, merged, skipped: merged });
 });
 
 // PATCH /api/shopping-list/:id — toggle checked or update name/qty.
@@ -1393,6 +1441,12 @@ function guessCategory(name) {
     return 'Meat & Seafood';
   }
 
+  // Dried spices & ground seasonings — checked before Produce so "black pepper",
+  // "cayenne pepper", "garlic powder", etc. don't get read as fresh produce.
+  if (/cayenne|peppercorn|black pepper|white pepper|pepper flake|chili powder|paprika|cumin|oregano|cinnamon|turmeric|garlic powder|onion powder|nutmeg|coriander|cardamom|allspice|curry powder|garam masala|italian seasoning|bay leaf|ground /.test(n)) {
+    return 'Condiments & Spices';
+  }
+
   // Produce
   if (/lettuce|tomato|onion|garlic|potato|carrot|pepper|apple|banana|lemon|lime|spinach|broccoli|avocado|cucumber|herb|cilantro|mushroom|berry|fruit|vegetable/.test(n)) {
     return 'Produce';
@@ -1554,8 +1608,8 @@ app.post('/api/pantry/:id/to-shopping', (req, res) => {
 
   const id  = randomUUID();
   db.prepare(
-    'INSERT INTO shopping_list (id, name, qty, checked, position) VALUES (?, ?, ?, 0, ?)'
-  ).run(id, pantryItem.name, pantryItem.qty, position);
+    'INSERT INTO shopping_list (id, name, qty, checked, position, category) VALUES (?, ?, ?, 0, ?, ?)'
+  ).run(id, pantryItem.name, pantryItem.qty, position, pantryItem.category ?? 'Other');
 
   const row = db.prepare('SELECT * FROM shopping_list WHERE id = ?').get(id);
   res.status(201).json(rowToShoppingItem(row));
@@ -1607,8 +1661,9 @@ app.post('/api/shopping-list/move-to-pantry', (req, res) => {
         continue;
       }
 
-      // Auto-categorize.
-      const category = guessCategory(item.name);
+      // Prefer the item's stored category (set when it was added to the list),
+      // falling back to a name-based guess for older rows.
+      const category = item.category || guessCategory(item.name);
 
       // position = max within category so far (may change with each insert inside
       // the transaction, so we query inline per item).

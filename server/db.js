@@ -130,9 +130,32 @@ db.exec(`
     name     TEXT NOT NULL,
     qty      TEXT NOT NULL DEFAULT '',
     checked  INTEGER NOT NULL DEFAULT 0,
-    position INTEGER NOT NULL DEFAULT 0
+    position INTEGER NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT 'Other',
+    req_base REAL NOT NULL DEFAULT 0,   -- hidden: accumulated required amount, canonical base
+    req_dim  TEXT NOT NULL DEFAULT ''   -- hidden: dimension of req_base ('volume'|'weight'|'clove'|'count')
   );
 `);
+
+// Idempotent migration: add columns missing from an older shopping_list table.
+const shoppingCols = db
+  .prepare('PRAGMA table_info(shopping_list)')
+  .all()
+  .map((r) => r.name);
+const shoppingMigrations = [
+  { col: 'category', ddl: "TEXT NOT NULL DEFAULT 'Other'" },
+  { col: 'req_base', ddl: 'REAL NOT NULL DEFAULT 0' },
+  { col: 'req_dim',  ddl: "TEXT NOT NULL DEFAULT ''" },
+];
+for (const { col, ddl } of shoppingMigrations) {
+  if (!shoppingCols.includes(col)) {
+    try {
+      db.exec(`ALTER TABLE shopping_list ADD COLUMN ${col} ${ddl}`);
+    } catch {
+      // Column appeared between the PRAGMA read and now — harmless.
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // History — log of what was cooked, linked to a Library recipe.
