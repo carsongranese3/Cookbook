@@ -6,8 +6,13 @@
  * Props:
  *   isOffline — boolean
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api.js';
+
+// Feature flag: the "Running low" action (adds a pantry item to the shopping
+// list) is disabled for now. Flip to `true` to bring it back — all its code
+// (handleRunningLow, the button, the pantry-low-* styles) is left intact.
+const RUNNING_LOW_ENABLED = false;
 
 // Fixed category order — must match the backend exactly.
 export const PANTRY_CATEGORIES = [
@@ -21,6 +26,10 @@ export const PANTRY_CATEGORIES = [
   'Condiments & Spices',
   'Other',
 ];
+
+// Map an item to a known category, folding unknowns into "Other".
+const catOf = (it) =>
+  PANTRY_CATEGORIES.includes(it.category) ? it.category : 'Other';
 
 // ── Add / Edit form modal ──────────────────────────────────────────────────────
 function PantryFormModal({ item, onSave, onClose }) {
@@ -153,22 +162,24 @@ function PantryRow({ item, onEdit, onDelete, onRunningLow, isOffline }) {
         {item.qty && <span className="pantry-row-qty">{item.qty}</span>}
 
         <div className="pantry-row-actions">
-          {lowMsg ? (
-            <span className="pantry-low-msg">{lowMsg}</span>
-          ) : (
-            <button
-              className="pantry-low-btn"
-              onClick={handleRunningLow}
-              disabled={sendingLow || isOffline}
-              title="Add to shopping list"
-              aria-label={`Mark ${item.name} as running low — add to shopping list`}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-                <path d="M3 6h18M16 10a4 4 0 01-8 0"/>
-              </svg>
-              Running low
-            </button>
+          {RUNNING_LOW_ENABLED && (
+            lowMsg ? (
+              <span className="pantry-low-msg">{lowMsg}</span>
+            ) : (
+              <button
+                className="pantry-low-btn"
+                onClick={handleRunningLow}
+                disabled={sendingLow || isOffline}
+                title="Add to shopping list"
+                aria-label={`Mark ${item.name} as running low — add to shopping list`}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+                  <path d="M3 6h18M16 10a4 4 0 01-8 0"/>
+                </svg>
+                Running low
+              </button>
+            )
           )}
           <button
             className="hist-icon-btn"
@@ -226,6 +237,11 @@ export default function PantryScreen({ isOffline }) {
   const [formItem, setFormItem] = useState(undefined); // undefined=closed, null=new, item=edit
   const [formOpen, setFormOpen] = useState(false);
 
+  // Category toggle bar: which category sections are shown. Initialized once
+  // from content — categories that have items start ON, empty ones start OFF.
+  const [activeCats, setActiveCats] = useState(() => new Set());
+  const catsInitialized = useRef(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -240,6 +256,24 @@ export default function PantryScreen({ isOffline }) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Seed the category toggles the first time items arrive: on where there are
+  // items, off where empty. After this, toggles are the user's to control.
+  useEffect(() => {
+    if (catsInitialized.current || loading || items.length === 0) return;
+    setActiveCats(
+      new Set(PANTRY_CATEGORIES.filter((cat) => items.some((it) => catOf(it) === cat)))
+    );
+    catsInitialized.current = true;
+  }, [items, loading]);
+
+  function toggleCat(cat) {
+    setActiveCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  }
 
   function openAdd() {
     setFormItem(null);
@@ -263,6 +297,11 @@ export default function PantryScreen({ isOffline }) {
       await api.pantry.create(body);
     }
     await load();
+    // Make sure the item's category is visible (e.g. adding to an empty,
+    // toggled-off category should reveal it rather than hide the new item).
+    if (body?.category) {
+      setActiveCats((prev) => new Set(prev).add(body.category));
+    }
     closeForm();
   }
 
@@ -285,19 +324,19 @@ export default function PantryScreen({ isOffline }) {
     ? items.filter((it) => it.name.toLowerCase().includes(searchLower))
     : items;
 
-  // Build ordered category groups (only categories with ≥1 item)
-  const groups = PANTRY_CATEGORIES.map((cat) => ({
-    category: cat,
-    items: filtered.filter((it) => it.category === cat),
-  })).filter((g) => g.items.length > 0);
+  // Total item count per category (unfiltered) — drives chip labels + initial state.
+  const countByCat = Object.fromEntries(PANTRY_CATEGORIES.map((c) => [c, 0]));
+  for (const it of items) countByCat[catOf(it)] += 1;
 
-  // Items whose category doesn't match any known category (shouldn't happen but be safe)
-  const orphanItems = filtered.filter(
-    (it) => !PANTRY_CATEGORIES.includes(it.category)
-  );
-  if (orphanItems.length > 0) {
-    groups.push({ category: 'Other', items: orphanItems });
-  }
+  // Sections to render: the active (toggled-on) categories, in fixed order.
+  // While searching, drop active-but-empty sections to cut noise.
+  const sections = PANTRY_CATEGORIES
+    .filter((cat) => activeCats.has(cat))
+    .map((cat) => ({
+      category: cat,
+      items: filtered.filter((it) => catOf(it) === cat),
+    }))
+    .filter((g) => (searchLower ? g.items.length > 0 : true));
 
   return (
     <>
@@ -384,34 +423,57 @@ export default function PantryScreen({ isOffline }) {
           </div>
         )}
 
-        {/* No search results */}
-        {!loading && !error && items.length > 0 && groups.length === 0 && (
-          <div className="state-center">
-            <p style={{ margin: 0 }}>No items match &ldquo;{search}&rdquo;.</p>
+        {/* Category toggle bar — one button per section */}
+        {!loading && !error && items.length > 0 && (
+          <div className="chip-row" role="group" aria-label="Show or hide categories">
+            {PANTRY_CATEGORIES.map((cat) => (
+              <button
+                key={cat}
+                className={`chip ${activeCats.has(cat) ? 'active' : ''}`}
+                onClick={() => toggleCat(cat)}
+                aria-pressed={activeCats.has(cat)}
+              >
+                {cat}{countByCat[cat] > 0 ? ` · ${countByCat[cat]}` : ''}
+              </button>
+            ))}
           </div>
         )}
 
-        {/* Category groups */}
-        {!loading && !error && groups.length > 0 && (
-          <div className="pantry-list">
-            {groups.map((group) => (
-              <div key={group.category} className="pantry-section">
-                <div className="pantry-section-header">{group.category}</div>
-                <div className="pantry-section-items">
-                  {group.items.map((item) => (
-                    <PantryRow
-                      key={item.id}
-                      item={item}
-                      onEdit={openEdit}
-                      onDelete={handleDelete}
-                      onRunningLow={handleRunningLow}
-                      isOffline={isOffline}
-                    />
-                  ))}
+        {/* Sections for the active categories */}
+        {!loading && !error && items.length > 0 && (
+          sections.length === 0 ? (
+            <div className="state-center">
+              <p style={{ margin: 0 }}>
+                {searchLower
+                  ? <>No items match &ldquo;{search}&rdquo;.</>
+                  : 'No categories shown — turn one on above.'}
+              </p>
+            </div>
+          ) : (
+            <div className="pantry-list">
+              {sections.map((group) => (
+                <div key={group.category} className="pantry-section">
+                  <div className="pantry-section-header">{group.category}</div>
+                  <div className="pantry-section-items">
+                    {group.items.length > 0 ? (
+                      group.items.map((item) => (
+                        <PantryRow
+                          key={item.id}
+                          item={item}
+                          onEdit={openEdit}
+                          onDelete={handleDelete}
+                          onRunningLow={handleRunningLow}
+                          isOffline={isOffline}
+                        />
+                      ))
+                    ) : (
+                      <div className="pantry-empty-hint">Nothing here yet.</div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )
         )}
       </div>
     </>
