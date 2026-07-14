@@ -27,6 +27,12 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
   const hasVideo = !!recipe?.has_video && !videoError;
   const videoSrc = recipe?.id ? `/api/recipes/${recipe.id}/video` : null;
 
+  // Ingredients for the reference list at the bottom of the step view.
+  const ingredients = useMemo(
+    () => (Array.isArray(recipe?.ingredients) ? recipe.ingredients.filter((i) => i && i.name) : []),
+    [recipe?.ingredients]
+  );
+
   function handleFinish() {
     if (onFinish) {
       onFinish(recipe);
@@ -175,6 +181,20 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
     </div>
   );
 
+  const ingredientsBar = ingredients.length > 0 && (
+    <div className="cook-ingredients">
+      <div className="cook-ingredients-label">Ingredients</div>
+      <ul className="cook-ingredients-list">
+        {ingredients.map((ing, i) => (
+          <li key={i}>
+            {ing.name}
+            {ing.qty ? <span className="cook-ing-qty"> ({ing.qty})</span> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
   const footer = (
     <div className="cook-footer">
       <button
@@ -256,6 +276,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
         {header}
         {progressBar}
         {body}
+        {ingredientsBar}
         {footer}
       </div>
     );
@@ -268,6 +289,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
       <div className="cook-main">
         <div className="cook-instructions">
           {body}
+          {ingredientsBar}
           {footer}
         </div>
         {videoPane}

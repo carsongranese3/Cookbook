@@ -1779,6 +1779,44 @@ a:hover { color: var(--accent-dark); }
   .cook-step-text { font-size: 26px; line-height: 1.35; margin-top: 16px; }
 }
 
+/* Ingredient reference list, pinned at the bottom of the step view. */
+.cook-ingredients {
+  flex: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 14px 40px;
+  max-height: 26vh;
+  overflow-y: auto;
+}
+
+.cook-ingredients-label {
+  font: 600 11px 'Onest';
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.cook-ingredients-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+}
+
+.cook-ingredients-list li {
+  font: 400 14.5px 'Onest';
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.cook-ing-qty { color: var(--accent); }
+
+@media (max-width: 767px) {
+  .cook-ingredients { padding: 12px 24px; max-height: 22vh; }
+  .cook-ingredients-list { gap: 5px 16px; }
+  .cook-ingredients-list li { font-size: 13.5px; }
+}
+
 .cook-footer {
   display: flex;
   justify-content: space-between;
