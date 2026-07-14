@@ -563,6 +563,21 @@ a:hover { color: var(--accent-dark); }
   flex: none;
 }
 
+/* Compact add button shown in the header top-right on phones only. */
+.header-add-btn { display: none; }
+
+@media (max-width: 767px) {
+  .header-add-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 38px;
+    padding: 0 15px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex: none;
+  }
+}
+
 @media (max-width: 767px) {
   .library-header { align-items: flex-end; }
   .library-search-wrap { width: 100%; margin-top: 16px; }

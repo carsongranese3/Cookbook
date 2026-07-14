@@ -119,11 +119,7 @@ export default function Library({ recipes, loading, error, onRetry, onOpen, onNe
       <div className="library-header">
         <div>
           <div className="eyebrow">My Kitchen</div>
-          <h1 className="page-title desktop-only" style={{ margin: 0 }}>Recipes</h1>
-          <div className="ph-title-count-row phone-only">
-            <h1 className="page-title" style={{ margin: 0 }}>Recipes</h1>
-            <span className="ph-recipe-count">{displayRecipes.length}</span>
-          </div>
+          <h1 className="page-title" style={{ margin: 0 }}>Recipes</h1>
         </div>
 
         {/* Desktop: search + New recipe */}
@@ -143,6 +139,11 @@ export default function Library({ recipes, loading, error, onRetry, onOpen, onNe
             + New recipe
           </button>
         </div>
+
+        {/* Phone: top-right New recipe button */}
+        <button className="btn btn-primary header-add-btn" onClick={onNew}>
+          + New
+        </button>
       </div>
 
       {/* Phone: full-width search */}

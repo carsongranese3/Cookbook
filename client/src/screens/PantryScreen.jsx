@@ -371,9 +371,14 @@ export default function PantryScreen({ isOffline }) {
               + Add item
             </button>
           </div>
+
+          {/* Phone: top-right add button */}
+          <button className="btn btn-primary header-add-btn" onClick={openAdd} disabled={isOffline}>
+            + Add
+          </button>
         </div>
 
-        {/* Phone: search + add (hidden on desktop, where the header controls show) */}
+        {/* Phone: full-width search (add button lives in the header, top-right) */}
         <div className="phone-block" style={{ marginTop: 14 }}>
           <div className="search-box" style={{ borderRadius: 12, height: 42 }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a8a29a" strokeWidth="2" aria-hidden="true">
@@ -386,14 +391,6 @@ export default function PantryScreen({ isOffline }) {
               aria-label="Search pantry items"
             />
           </div>
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', marginTop: 10 }}
-            onClick={openAdd}
-            disabled={isOffline}
-          >
-            + Add item
-          </button>
         </div>
 
         {/* Loading */}

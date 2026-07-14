@@ -289,19 +289,16 @@ export default function ShoppingList({ isOffline }) {
               + Add item
             </button>
           </div>
+
+          {/* Phone: top-right add button */}
+          <button className="btn btn-primary header-add-btn" onClick={() => setFormOpen(true)} disabled={isOffline}>
+            + Add
+          </button>
         </div>
 
-        {/* Phone: search + add (hidden on desktop, where the header controls show) */}
+        {/* Phone: full-width search (add button lives in the header, top-right) */}
         <div className="phone-block" style={{ marginTop: 14 }}>
           {searchBox({ borderRadius: 12, height: 42 })}
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', marginTop: 10 }}
-            onClick={() => setFormOpen(true)}
-            disabled={isOffline}
-          >
-            + Add item
-          </button>
         </div>
 
         {/* Category toggle bar — one button per section (same as Pantry) */}

@@ -75,8 +75,9 @@ const NAV_ITEMS = [
   },
 ];
 
-// Phone tab order: 6 tabs — Home, Plan, Add, List, Pantry, Log
-const PHONE_ORDER = ['library', 'plan', 'add', 'shopping', 'pantry', 'history'];
+// Phone tab order: 5 tabs — Home, Plan, List, Pantry, Log. Adding a recipe is a
+// top-right button on the Library screen (calls onNew), not a bottom tab.
+const PHONE_ORDER = ['library', 'plan', 'shopping', 'pantry', 'history'];
 
 export default function AppShell({ activeTab, onNav, recipeCount, children }) {
   return (
