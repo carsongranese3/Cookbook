@@ -128,7 +128,7 @@ export async function assignFilters(recipe, filterLabels) {
 // surface as a clear CONFIG error rather than a module-load crash.
 
 const DEFAULT_MODEL   = 'gemini-3.1-flash-lite';
-const TIMEOUT_MS      = parseInt(process.env.GEMINI_TIMEOUT_MS ?? '', 10) || 120_000;
+export const TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS ?? '', 10) || 120_000;
 const MAX_FILE_BYTES  = 200 * 1024 * 1024; // 200 MB guard
 
 /** Map raw model-returned labels to the canonical user labels (case-insensitive, de-duped). */
@@ -218,7 +218,7 @@ const RETRY_PROMPT =
  * @param {string} raw
  * @returns {unknown}  Throws SyntaxError if unparseable.
  */
-function parseModelJson(raw) {
+export function parseModelJson(raw) {
   // 1. Strip ```json … ``` or ``` … ``` fences.
   let cleaned = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/im, '').trim();
 
@@ -331,7 +331,7 @@ function coerceDraft(raw) {
  * @param {number} ms
  * @returns {Promise<T>}
  */
-function withTimeout(promise, ms) {
+export function withTimeout(promise, ms) {
   return Promise.race([
     promise,
     new Promise((_, reject) =>
@@ -347,7 +347,7 @@ function withTimeout(promise, ms) {
  * Classify a raw Gemini SDK error. 429/quota and 503/overload become
  * RATE_LIMITED (with a truthful message); anything else is a generic FETCH_FAILED.
  */
-function classifyGeminiError(err) {
+export function classifyGeminiError(err) {
   const msg = String(err?.message || '');
   if (/\b429\b|quota|too many requests|resource[_ ]?exhausted/i.test(msg)) {
     return new ExtractError(CODES.RATE_LIMITED, `Gemini quota/rate limit: ${msg}`);
@@ -367,7 +367,7 @@ function classifyGeminiError(err) {
  * throughput without billing. Override with GEMINI_MODELS (comma-separated),
  * or set the primary with GEMINI_MODEL.
  */
-function resolveModelChain() {
+export function resolveModelChain() {
   if (process.env.GEMINI_MODELS) {
     return process.env.GEMINI_MODELS.split(',').map((s) => s.trim()).filter(Boolean);
   }

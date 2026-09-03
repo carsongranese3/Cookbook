@@ -1,30 +1,100 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api.js';
 import { PANTRY_CATEGORIES } from './PantryScreen.jsx';
+import { titleCase } from '../utils/text.js';
 
 // Fold an unknown category into "Other" so every item lands in a known section.
 const catOf = (it) =>
   PANTRY_CATEGORIES.includes(it.category) ? it.category : 'Other';
 
-// ── Add item modal (mirrors the Pantry add/edit modal) ──────────────────────────
-function ShoppingFormModal({ onSave, onClose }) {
-  const [name, setName]         = useState('');
-  const [qty, setQty]           = useState('');
-  const [category, setCategory] = useState(''); // '' = Auto (classify by name)
-  const [saving, setSaving]     = useState(false);
-  const [error, setError]       = useState('');
+// Build the text pasted into Apple Reminders: one item name per line, since
+// Reminders turns each pasted line into its own reminder. Names only — quantities
+// are deliberately left off. Only unchecked items; checked ones are already in the
+// cart. Ordered by category (matching the on-screen sections) so like items land
+// together, since Reminders has no headers of its own.
+function buildListText(items) {
+  const order = new Map(PANTRY_CATEGORIES.map((c, i) => [c, i]));
+  return items
+    .filter((it) => !it.checked)
+    .slice()
+    .sort((a, b) => {
+      const d = order.get(catOf(a)) - order.get(catOf(b));
+      return d !== 0 ? d : a.position - b.position;
+    })
+    .map((it) => titleCase(it.name))
+    .join('\n');
+}
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) { setError('Name is required.'); return; }
-    setSaving(true);
-    setError('');
-    try {
-      await onSave({ name: trimmed, qty: qty.trim(), category });
-    } catch (err) {
-      setError(err.message || 'Could not add item.');
-      setSaving(false);
+// Name of the macOS/iOS Shortcut that turns the pasted lines into individual
+// reminders. Must match the Shortcut exactly, or Shortcuts reports "not found".
+const SHORTCUT_NAME = 'Add to Groceries';
+
+// Legacy execCommand copy, for the non-secure-context case (this app is served
+// over plain HTTP via Tailscale, so navigator.clipboard does not exist there).
+//
+// Uses a contentEditable <div> holding a real child text node. A <textarea> does
+// NOT work: its value is not a child node, so range.selectNodeContents() selects
+// nothing and the copy silently succeeds with an empty clipboard.
+// Must run synchronously inside a user gesture.
+function copyViaExecCommand(text) {
+  let host = null;
+  try {
+    host = document.createElement('div');
+    host.textContent = text;
+    host.contentEditable = 'true';
+    host.style.position = 'fixed';
+    host.style.left = '0';
+    host.style.bottom = '0';
+    host.style.width = '1px';
+    host.style.height = '1px';
+    host.style.padding = '0';
+    host.style.border = 'none';
+    host.style.outline = 'none';
+    host.style.overflow = 'hidden';
+    host.style.whiteSpace = 'pre';  // preserve the line breaks
+    host.style.fontSize = '16px';   // under 16px makes iOS zoom the viewport
+    host.style.opacity = '0';
+    document.body.appendChild(host);
+
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const ok = document.execCommand('copy');
+    sel.removeAllRanges();
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    if (host) host.remove();
+  }
+}
+
+// ── Manual-copy panel ────────────────────────────────────────
+// Shown whenever the one-tap clipboard write is not available (plain HTTP) or
+// fails. The text is on screen and pre-selected, so copying by hand always
+// works even if every programmatic path is blocked.
+function CopyFallbackModal({ text, onClose }) {
+  const taRef = useRef(null);
+  const [status, setStatus] = useState('');
+
+  const selectAll = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+  };
+
+  useEffect(() => { selectAll(); }, []);
+
+  function handleCopyClick() {
+    if (copyViaExecCommand(text)) {
+      setStatus('Copied — now paste into Reminders.');
+    } else {
+      selectAll();
+      setStatus('Still blocked. The text is selected — press and hold it, then tap Copy.');
     }
   }
 
@@ -34,11 +104,11 @@ function ShoppingFormModal({ onSave, onClose }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Add shopping item"
+      aria-label="Copy list for Reminders"
     >
       <div className="modal-box pantry-form-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header mf-header">
-          <span>Add to list</span>
+          <span>Copy for Reminders</span>
           <button className="mf-close-btn" onClick={onClose} aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M1 1l12 12M13 1L1 13"/>
@@ -46,59 +116,24 @@ function ShoppingFormModal({ onSave, onClose }) {
           </button>
         </div>
         <div className="modal-body" style={{ padding: '16px 20px 20px' }}>
-          <form onSubmit={handleSubmit}>
-            {error && <div className="error-banner" style={{ marginBottom: 12 }}>{error}</div>}
-
-            <div className="form-group" style={{ marginBottom: 12 }}>
-              <label htmlFor="shop-name" className="form-label">Name <span aria-hidden>*</span></label>
-              <input
-                id="shop-name"
-                className="form-input"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Olive oil"
-                autoFocus
-                disabled={saving}
-              />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: 12 }}>
-              <label htmlFor="shop-qty" className="form-label">Quantity <span className="form-hint">(optional)</span></label>
-              <input
-                id="shop-qty"
-                className="form-input"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                placeholder="e.g. 1 bottle"
-                disabled={saving}
-              />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: 20 }}>
-              <label htmlFor="shop-cat" className="form-label">Category</label>
-              <select
-                id="shop-cat"
-                className="form-input form-select"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                disabled={saving}
-              >
-                <option value="">Auto (choose by name)</option>
-                {PANTRY_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-actions">
-              <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? 'Adding…' : 'Add to list'}
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
-                Cancel
-              </button>
-            </div>
-          </form>
+          <p className="form-hint" style={{ margin: '0 0 10px' }}>
+            Tap Copy below. If nothing lands on the clipboard, press and hold the
+            selected text and choose Copy — then paste into a Reminders list.
+          </p>
+          <textarea
+            ref={taRef}
+            className="form-input form-textarea copy-fallback-text"
+            defaultValue={text}
+            rows={Math.min(14, text.split('\n').length + 1)}
+            onFocus={selectAll}
+          />
+          {status && (
+            <p className="shop-pantry-msg" role="status" style={{ marginTop: 8 }}>{status}</p>
+          )}
+          <div className="form-actions" style={{ marginTop: 16 }}>
+            <button type="button" className="btn btn-primary" onClick={handleCopyClick}>Copy</button>
+            <button type="button" className="btn btn-ghost" onClick={onClose}>Done</button>
+          </div>
         </div>
       </div>
     </div>
@@ -114,6 +149,8 @@ export default function ShoppingList({ isOffline }) {
   const [formOpen, setFormOpen]   = useState(false);
   const [pantryMsg, setPantryMsg] = useState('');
   const [movingToPantry, setMovingToPantry] = useState(false);
+  const [copyMsg, setCopyMsg]           = useState('');
+  const [copyFallback, setCopyFallback] = useState(null); // text, or null
 
   // Category toggle bar (same as Pantry): which category sections are shown.
   // Seeded once from content — categories with items on, empty ones off.
@@ -203,6 +240,41 @@ export default function ShoppingList({ isOffline }) {
     }
   }
 
+  // Hand the list to the Shortcut, which adds one reminder per line. Reminders
+  // itself will not split a pasted multi-line block, so something has to create
+  // them one at a time — that is what the Shortcut is for.
+  //
+  // The text is sent BOTH as the shortcut input and on the clipboard, so this
+  // works whether the Shortcut starts with "Shortcut Input" or "Get Clipboard".
+  function handleSendToShortcut() {
+    const text = buildListText(items);
+    if (!text) return;
+    copyViaExecCommand(text); // best effort; harmless if it fails
+    const url =
+      'shortcuts://run-shortcut?name=' + encodeURIComponent(SHORTCUT_NAME) +
+      '&input=text&text=' + encodeURIComponent(text);
+    window.location.href = url;
+  }
+
+  async function handleCopyForReminders() {
+    const text = buildListText(items);
+    if (!text) return;
+    // One-tap path only exists in a secure context (HTTPS/localhost). Over plain
+    // HTTP there is no navigator.clipboard, so go straight to the manual panel
+    // rather than firing a copy that can report success while doing nothing.
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopyMsg('Copied — paste into Reminders');
+        setTimeout(() => setCopyMsg(''), 3000);
+        return;
+      } catch {
+        // Blocked by permissions — fall through to the panel.
+      }
+    }
+    setCopyFallback(text);
+  }
+
   async function handleMoveToPantry() {
     if (isOffline) return;
     const checkedItems = items.filter((i) => i.checked);
@@ -276,6 +348,10 @@ export default function ShoppingList({ isOffline }) {
         <ShoppingFormModal onSave={handleAdd} onClose={() => setFormOpen(false)} />
       )}
 
+      {copyFallback !== null && (
+        <CopyFallbackModal text={copyFallback} onClose={() => setCopyFallback(null)} />
+      )}
+
       <div className="page-pad">
         {/* Header — mirrors the Pantry screen */}
         <div className="library-header">
@@ -317,23 +393,44 @@ export default function ShoppingList({ isOffline }) {
           </div>
         )}
 
-        {items.some((i) => i.checked) && (
+        {items.length > 0 && (
           <div className="shop-actions">
             <button
               className="btn btn-ghost shop-action-btn"
-              onClick={handleMoveToPantry}
-              disabled={isOffline || movingToPantry}
-              title="Move checked items to your pantry"
+              onClick={handleSendToShortcut}
+              disabled={uncheckedCount === 0}
+              title={`Send the list to the "${SHORTCUT_NAME}" shortcut, which adds one reminder per item`}
             >
-              {movingToPantry ? 'Moving…' : 'Move to Pantry'}
+              Send to Reminders
             </button>
+            {/* Copy is purely local — deliberately not gated on isOffline. */}
             <button
               className="btn btn-ghost shop-action-btn"
-              onClick={handleClearChecked}
-              disabled={isOffline}
+              onClick={handleCopyForReminders}
+              disabled={uncheckedCount === 0}
+              title="Copy unchecked items, one per line, to paste into Reminders"
             >
-              Clear checked
+              {copyMsg || `Copy ${uncheckedCount} for Reminders`}
             </button>
+            {items.some((i) => i.checked) && (
+              <>
+                <button
+                  className="btn btn-ghost shop-action-btn"
+                  onClick={handleMoveToPantry}
+                  disabled={isOffline || movingToPantry}
+                  title="Move checked items to your pantry"
+                >
+                  {movingToPantry ? 'Moving…' : 'Move to Pantry'}
+                </button>
+                <button
+                  className="btn btn-ghost shop-action-btn"
+                  onClick={handleClearChecked}
+                  disabled={isOffline}
+                >
+                  Clear checked
+                </button>
+              </>
+            )}
           </div>
         )}
         {pantryMsg && (
@@ -403,7 +500,7 @@ export default function ShoppingList({ isOffline }) {
                         )}
                       </button>
                       <span className={`shop-item-name ${item.checked ? 'checked' : ''}`}>
-                        {item.name}
+                        {titleCase(item.name)}
                       </span>
                       {item.qty && (
                         <span className="shop-item-qty">{item.qty}</span>

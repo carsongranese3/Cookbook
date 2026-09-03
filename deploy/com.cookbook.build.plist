@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cookbook.build</string>
+
+  <!-- Rebuild client/dist whenever client source changes, so the app served by
+       com.cookbook.server on port 3001 (Mac + phone over Tailscale) is always
+       the latest code — no manual `npm run build`. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/carsongranese/.nvm/versions/node/v20.20.0/bin/node</string>
+    <string>/Users/carsongranese/dev/GitHub/Cookbook/client/node_modules/vite/bin/vite.js</string>
+    <string>build</string>
+    <string>--watch</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/client</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/carsongranese/.nvm/versions/node/v20.20.0/bin:/opt/homebrew/bin:/Users/carsongranese/.homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+
+  <!-- Start at login and restart if it ever crashes = "always on". -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Logs (gitignored via *.log). -->
+  <key>StandardOutPath</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/client/build.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/carsongranese/dev/GitHub/Cookbook/client/build.log</string>
+</dict>
+</plist>

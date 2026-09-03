@@ -4,6 +4,7 @@ import { HeartIcon } from './Library.jsx';
 import { api } from '../api.js';
 import { shortDayName, formatDayDate } from '../utils/week.js';
 import { fileToDownscaledDataUrl } from '../utils/image.js';
+import { titleCase } from '../utils/text.js';
 
 export default function RecipeDetail({
   recipe,
@@ -329,7 +330,7 @@ export default function RecipeDetail({
           <div className="confirm-box">
             <p className="confirm-title">Delete recipe?</p>
             <p className="confirm-msg">
-              This will permanently remove &ldquo;{title}&rdquo; from your library.
+              This will permanently remove &ldquo;{titleCase(title)}&rdquo; from your library.
             </p>
             <div className="confirm-actions">
               <button className="btn btn-ghost" onClick={() => setShowConfirm(false)}>Cancel</button>
@@ -405,7 +406,7 @@ export default function RecipeDetail({
         <div className="detail-main">
           <div className="detail-info">
             {eyebrow && <div className="detail-eyebrow">{eyebrow}</div>}
-            <h1 className="detail-title">{title}</h1>
+            <h1 className="detail-title">{titleCase(title)}</h1>
             {displayFilters.length > 0 && (
               <div className="detail-assigned-filters">
                 {displayFilters.map((label) => (
@@ -547,7 +548,7 @@ export default function RecipeDetail({
             <div className="ingredients-list">
               {(ingredients || []).map((ing, i) => (
                 <div key={i} className="ingredient-row">
-                  <span className="ing-name">{ing.name}</span>
+                  <span className="ing-name">{titleCase(ing.name)}</span>
                   <span className="ing-qty">{ing.qty}</span>
                 </div>
               ))}
@@ -615,7 +616,7 @@ export default function RecipeDetail({
             </div>
           )}
           <h1 style={{ font: '600 22px/1.15 Onest,system-ui', color: 'var(--text)', letterSpacing: '-0.02em', margin: '5px 0 0' }}>
-            {title}
+            {titleCase(title)}
           </h1>
 
           <div className="ph-stats-strip">
@@ -639,7 +640,7 @@ export default function RecipeDetail({
           <div className="ingredients-list" style={{ marginTop: 8 }}>
             {(ingredients || []).map((ing, i) => (
               <div key={i} className="ingredient-row">
-                <span className="ing-name" style={{ fontSize: 13 }}>{ing.name}</span>
+                <span className="ing-name" style={{ fontSize: 13 }}>{titleCase(ing.name)}</span>
                 <span className="ing-qty" style={{ fontSize: 13 }}>{ing.qty}</span>
               </div>
             ))}

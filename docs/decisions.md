@@ -192,3 +192,93 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
   or "upload the file instead" (which bypasses yt-dlp entirely).
 - Incident note: the active block that surfaced this was triggered by an agent's burst of yt-dlp
   probe requests against IG during feature testing — pace/avoid live IG/TikTok requests in tooling.
+
+## 2026-08-23 — Pantry receipt import (photo → AI → bulk add)
+- **Destination is the Pantry, not the shopping list.** A receipt is proof of what you *already
+  bought*, so the items belong in the inventory. This mirrors the existing
+  `POST /api/shopping-list/move-to-pantry` (checked → pantry) rather than competing with it.
+- **Two endpoints, never one.** `POST /api/pantry/receipt` returns a **draft** and persists nothing;
+  `POST /api/pantry/bulk` saves the reviewed items. Receipt OCR is genuinely messy — abbreviated
+  names, weighed lines, non-grocery clutter — so the review step is load-bearing, not a nicety.
+  Every row in the review list is editable and de-selectable before anything is written.
+- **Inline image data, not the Gemini Files API.** Receipt photos are a few MB, so a single inline
+  request avoids the upload → poll → generate round-trip that video extraction needs. ~4–5 s
+  end-to-end. Capped at 12 MB (inline requests are base64'd and Gemini caps near 20 MB).
+- **Reuses the video path's model-fallback chain.** `resolveModelChain`/`withTimeout`/
+  `classifyGeminiError`/`parseModelJson` are now exported from `extract/gemini.js` and shared, so a
+  429 on one free-tier model falls through to the next exactly as video extraction does.
+- **Non-food is excluded on purpose.** The prompt drops cleaning supplies, paper goods, toiletries,
+  pet and pharmacy items along with the subtotal/tax/payment lines. The Pantry's fixed category list
+  has no "Household" bucket, so those would all land in "Other" and just add noise. If a household
+  inventory is ever wanted, that's a category-list change first.
+- **De-dupe skips, it does not update.** A name already in the pantry is reported in `skipped` and
+  left untouched — re-scanning the same receipt is safe and will not clobber a quantity the user
+  has since edited by hand. Same case-insensitive name rule as `move-to-pantry`.
+- Verified end to end against a synthetic receipt: abbreviations expanded (`BNLS SKNLS CHKN BRST` →
+  "Boneless skinless chicken breast"), metric converted (`500ML` → `17 fl oz`), weighed line read as
+  `1.87 lb`, and paper towels / wipes / tax / card lines all correctly dropped.
+
+## 2026-08-24 — Pantry drops quantities (UI only)
+- The Pantry is now **just what you have**, not how much: no quantity on the item rows, the
+  add/edit form, or the receipt-import review list (which is name + category).
+- **The API and DB are unchanged** — `pantry.qty` still exists, `POST/PATCH /api/pantry` still
+  accept it, and `POST /api/shopping-list/move-to-pantry` still copies a qty across. It is simply
+  never displayed. Deliberately non-destructive: no migration, and re-surfacing quantities later is
+  a UI change only. Nothing reads the column today, so stale values are inert.
+- `POST /api/pantry/receipt` still returns `qty` per the §7 docs; the review modal discards it.
+  Left in place so the endpoint stays a general receipt reader rather than being narrowed to the
+  Pantry's current UI.
+
+## 2026-09-02 — Port 3001 is the always-on address; dist rebuilds itself
+- **:3001 is the real address for both Mac and phone.** `com.cookbook.server` already served the
+  API plus `client/dist` there; the phone reaches it over Tailscale at
+  `carsons-macbook-air.tailcbc03a.ts.net:3001` (or `100.119.245.13:3001`). The Vite dev server on
+  :5173 stays localhost-only and is for development only — it is deliberately **not** exposed with
+  `--host`, so there is exactly one URL to remember per device.
+- **New LaunchAgent `com.cookbook.build`** (`deploy/com.cookbook.build.plist`) runs
+  `vite build --watch` against `client/`. The failure mode it removes: `client/dist` was a snapshot
+  from whenever `npm run build` last ran, so the phone could silently be weeks behind the source.
+  Now every saved client change rebuilds dist in <1s and :3001 serves it immediately.
+- **Why `vite build --watch` and not a dev server on :3001.** The phone install is a PWA — it needs
+  the real production build (hashed assets, generated `sw.js`, precache manifest), which the dev
+  server does not produce. Watch-mode build keeps the artifact production-shaped and current.
+- **Known tradeoff:** a page load that lands mid-rebuild can miss a hashed asset for a moment.
+  Builds take well under a second and the service worker is `autoUpdate`, so a reload fixes it.
+  Not worth an atomic-swap build directory for a single-user app.
+- **Server code is still not hot.** `com.cookbook.server` runs plain `node index.js`; edits under
+  `server/` need `cd server && npm run service:restart`. Left as-is on purpose — `node --watch`
+  would bounce the API (and any in-flight yt-dlp/Gemini extraction) on every keystroke-save.
+
+## 2026-09-02 — Shopping List price estimation (scope decisions)
+Feature: pick a grocery store, press a button, get an estimated price for the whole list.
+The explorer confirmed there is **no** existing price/cost code, no external price API, and no
+settings store anywhere in the repo — so these are fresh calls, not inferences from existing code.
+
+- **Price source: Gemini, not a real store API.** Reuses `GEMINI_API_KEY` and the shared helpers
+  already exported from `extract/gemini.js` (`resolveModelChain`, `withTimeout`,
+  `classifyGeminiError`, `parseModelJson`), exactly as `extract/receipt.js` does. Rejected the
+  Kroger developer API: it returns genuinely accurate per-store prices but requires an OAuth
+  client registration and only covers Kroger-family banners. The user asked for an *estimate*, and
+  Gemini works for any store named. **This is an estimate and the UI must say so** — never present
+  it as a real price.
+- **Prices are cached in a price book, not re-asked every press.** New `price_book` table keyed by
+  (store, zip, normalized item name) holding a unit price, the qty string it was priced for, and
+  `updated_at`. A press prices only the items missing or stale from the book, so the second press
+  on an unchanged list costs zero Gemini calls. **Staleness: 30 days**, after which an entry is
+  re-estimated. This is what keeps a free-tier key viable.
+- **Prices do NOT go on `shopping_list` rows.** The explorer documented how the hidden
+  `req_base`/`req_dim` columns silently desync when `PATCH /api/shopping-list/:id` edits a qty.
+  Adding price columns to the same table would reproduce that failure mode. The book is keyed by
+  item name and joined at estimate time; the estimate response carries per-item prices transiently.
+- **Store choice is server-persisted, in a new `settings(key, value)` table.** Client `localStorage`
+  (the `cookbook.filterLayout` pattern in `utils/filters.js`) was the alternative, but the store is
+  a *shared* preference: the Mac and the phone must agree, and the estimate endpoint itself needs
+  the store to build its prompt. Follows the existing `CREATE TABLE IF NOT EXISTS` + boot-time
+  `PRAGMA table_info` migrations-array pattern in `server/db.js`.
+- **Store picker = curated chain list + optional ZIP.** Grocery prices are strongly regional, so the
+  ZIP materially changes the answer; it stays optional so the feature works without it.
+- **Display: per-item price + a list total.** Rejected total-only — a per-item breakdown is what
+  lets an obviously-wrong estimate be spotted, which matters precisely because the number is
+  AI-generated.
+- **Out of scope, deliberately:** no currency other than USD, no price history/tracking over time,
+  no per-store comparison, and no attempt to fix the pre-existing `req_base`/`req_dim` desync.

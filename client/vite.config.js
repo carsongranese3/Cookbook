@@ -33,6 +33,10 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Client-side routing: serve the app shell for any navigation (e.g.
+        // /pantry, /recipe/:id) while leaving /api requests to the network.
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
             // Excludes /api/recipes/:id/video on purpose — that route streams

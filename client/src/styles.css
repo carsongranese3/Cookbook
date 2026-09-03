@@ -3007,6 +3007,16 @@ a:hover { color: var(--accent-dark); }
   margin: 6px 0 0;
 }
 
+/* Manual-copy fallback textarea (shown only when the clipboard write fails). */
+.copy-fallback-text {
+  width: 100%;
+  height: auto;
+  min-height: 120px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* ── Pantry Screen ──────────────────────────────────────────────────────── */
 .pantry-list {
   margin-top: 24px;
@@ -3061,13 +3071,6 @@ a:hover { color: var(--accent-dark); }
   white-space: nowrap;
 }
 
-.pantry-row-qty {
-  font: 400 12px 'Onest';
-  color: var(--muted);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 .pantry-row-actions {
   display: flex;
   align-items: center;
@@ -3119,6 +3122,190 @@ a:hover { color: var(--accent-dark); }
   .pantry-form-modal {
     width: 100%;
   }
+}
+
+/* ── Receipt import (Pantry) ────────────────────────────────────────────── */
+
+/* Phone header: the receipt + add buttons sit together, top-right. */
+.header-phone-actions { display: none; }
+
+@media (max-width: 767px) {
+  .header-phone-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+  }
+  /* Square icon-only variant of .header-add-btn. */
+  .header-icon-only {
+    padding: 0;
+    width: 38px;
+    justify-content: center;
+  }
+}
+
+/* Wider than the standard modal: each row carries name + qty + category. */
+.receipt-modal {
+  width: 520px;
+  max-height: 86vh;
+}
+
+@media (max-width: 767px) {
+  .receipt-modal {
+    width: 100%;
+    max-height: 90vh;
+  }
+}
+
+.receipt-store {
+  font: 400 13px 'Onest';
+  color: var(--muted);
+}
+
+.receipt-body {
+  padding: 16px 20px;
+}
+
+/* The modal's own states are already vertically centred in a short box — the
+   page-level 60px padding is far too much here. */
+.receipt-body .state-center { padding: 32px 0; }
+
+/* ── Pick a photo ── */
+.receipt-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 12px 20px;
+  text-align: center;
+}
+
+.receipt-pick-title {
+  margin: 4px 0 0;
+  font: 600 15px 'Onest';
+  color: var(--text);
+}
+
+.receipt-pick-hint {
+  margin: 0;
+  max-width: 330px;
+  font: 400 13px 'Onest';
+  color: var(--secondary);
+  line-height: 1.5;
+}
+
+/* Camera / library / file-picker buttons. `.phone-flex` and `.desktop-flex`
+   decide which set is shown; this only handles their layout. */
+.receipt-pick-actions {
+  margin-top: 6px;
+  gap: 10px;
+}
+
+/* On phones the two options stack full-width so both are easy thumb targets,
+   with "Take photo" on top as the expected path. */
+.receipt-pick-actions.phone-flex {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  max-width: 290px;
+}
+
+/* Each <label> is the button; the file input inside it stays hidden. */
+.receipt-pick-btn {
+  cursor: pointer;
+}
+
+/* Match the primary button's height so the stacked pair reads as one control. */
+.receipt-pick-actions.phone-flex .btn-secondary { height: 44px; }
+
+.receipt-pick-btn input[type="file"] {
+  display: none;
+}
+
+/* ── Review list ── */
+.receipt-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.receipt-count {
+  font: 600 13px 'Onest';
+  color: var(--secondary);
+}
+
+.receipt-toolbar-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.receipt-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: 600 13px 'Onest';
+  color: var(--accent);
+}
+
+.receipt-link-btn:hover:not(:disabled) { color: var(--accent-dark); }
+.receipt-link-btn:disabled { opacity: 0.5; cursor: default; }
+
+.receipt-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.receipt-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.receipt-row:last-child { border-bottom: none; }
+
+/* De-selected rows stay readable and editable, just visibly out of the import. */
+.receipt-row--off { opacity: 0.45; }
+
+.receipt-check {
+  margin-top: 11px;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.receipt-row-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.receipt-name { width: 100%; }
+
+.receipt-cat { width: 100%; }
+
+/* Rows are dense, so shrink the shared input sizing inside the list. */
+.receipt-row .form-input {
+  height: 34px;
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+.receipt-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-light);
+  flex: none;
 }
 
 /* ── Draft cover-photo thumbnail strip (AddFromVideo) ───────────────────── */

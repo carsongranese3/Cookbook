@@ -46,6 +46,32 @@ Open http://localhost:5173. The Vite dev server proxies `/api/*` to the backend.
 `http://<your-computer-ip>:5173`. For access anywhere, put the app behind a private
 [Tailscale](https://tailscale.com) tunnel (see `docs/decisions.md` for the hosting plan).
 
+## Where to open it (this machine)
+
+Two LaunchAgents in [`deploy/`](./deploy) keep port 3001 always on and always current, so these
+URLs work without starting anything:
+
+| Where | URL | Serves |
+| --- | --- | --- |
+| Mac — everyday use | http://localhost:3001 | built app + API (`com.cookbook.server`) |
+| Mac — while developing | http://localhost:5173 | Vite dev server, hot reload (`npm run dev`) |
+| Phone (Tailscale) | http://carsons-macbook-air.tailcbc03a.ts.net:3001 | same as :3001 |
+| Phone (Tailscale, by IP) | http://100.119.245.13:3001 | same as :3001 |
+
+The dev server on :5173 is localhost-only, so the phone must use :3001.
+
+**Always-on services** — installed once with `cp deploy/*.plist ~/Library/LaunchAgents/` and
+`launchctl load` on each:
+
+- `com.cookbook.server` — the API + built app on :3001. Managed from `server/`:
+  `npm run service:restart` / `service:stop` / `service:start` / `service:log`.
+- `com.cookbook.build` — `vite build --watch`, which rebuilds `client/dist` on every client
+  source change so :3001 (and therefore the phone) always serves the latest UI. Managed the same
+  way from `client/`, logs to `client/build.log`.
+
+Server-side edits are the one exception: `com.cookbook.server` runs plain `node index.js`, so
+after changing anything in `server/` run `cd server && npm run service:restart`.
+
 > Note: if `npm install` errors with `EPERM` on a root-owned cache, run once:
 > `sudo chown -R $(id -u):$(id -g) ~/.npm`
 

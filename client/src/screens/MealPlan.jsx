@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { api } from '../api.js';
+import { titleCase } from '../utils/text.js';
 import { todayISO } from '../utils/week.js';
 import {
   WEEKDAY_LABELS,
@@ -188,7 +189,7 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
                     style={{ width: 44, height: 44, borderRadius: 8, flex: 'none' }}
                   />
                   <div>
-                    <div className="picker-recipe-title">{r.title}</div>
+                    <div className="picker-recipe-title">{titleCase(r.title)}</div>
                     <div className="picker-recipe-meta">
                       {r.minutes != null && `${r.minutes} min`}
                       {r.minutes != null && r.cuisine && ' · '}
@@ -245,7 +246,7 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
                       title={entry.recipe.title}
                       style={{ width: 44, height: 44, borderRadius: 8, flex: 'none' }}
                     />
-                    <div className="plan-meal-title">{entry.recipe.title}</div>
+                    <div className="plan-meal-title">{titleCase(entry.recipe.title)}</div>
                     <button
                       className="ph-remove"
                       onClick={(e) => { e.stopPropagation(); removeMeal(entry.id); }}
@@ -322,7 +323,7 @@ export default function MealPlan({ onOpenRecipe, isOffline }) {
                         title={entry.recipe.title}
                         style={{ height: 26 }}
                       />
-                      <div className="meal-thumb-title">{entry.recipe.title}</div>
+                      <div className="meal-thumb-title">{titleCase(entry.recipe.title)}</div>
                       <button
                         className="meal-thumb-remove"
                         onClick={(e) => { e.stopPropagation(); removeMeal(entry.id); }}

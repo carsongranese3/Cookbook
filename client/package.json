@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:watch": "vite build --watch",
+    "preview": "vite preview",
+    "service:stop": "launchctl unload ~/Library/LaunchAgents/com.cookbook.build.plist",
+    "service:start": "launchctl load ~/Library/LaunchAgents/com.cookbook.build.plist",
+    "service:restart": "launchctl kickstart -k gui/$(id -u)/com.cookbook.build",
+    "service:log": "tail -f build.log"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

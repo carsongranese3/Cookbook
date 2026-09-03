@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { titleCase } from '../utils/text.js';
 
 /**
  * CookingMode — full-screen step-by-step cooking guide.
@@ -135,7 +136,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
         <div className="cook-header">
           <div>
             <div className="cook-eyebrow">Cooking</div>
-            <div className="cook-title">{recipe?.title}</div>
+            <div className="cook-title">{titleCase(recipe?.title)}</div>
           </div>
           <button className="cook-close" onClick={onExit} aria-label="Close cooking mode">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" aria-hidden="true">
@@ -187,7 +188,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
       <ul className="cook-ingredients-list">
         {ingredients.map((ing, i) => (
           <li key={i}>
-            {ing.name}
+            {titleCase(ing.name)}
             {ing.qty ? <span className="cook-ing-qty"> ({ing.qty})</span> : null}
           </li>
         ))}
@@ -238,7 +239,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
     <div className="cook-header">
       <div>
         <div className="cook-eyebrow">Cooking</div>
-        <div className="cook-title">{recipe?.title}</div>
+        <div className="cook-title">{titleCase(recipe?.title)}</div>
       </div>
       <button className="cook-close" onClick={onExit} aria-label="Close cooking mode">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" aria-hidden="true">

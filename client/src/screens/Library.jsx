@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import RecipeImage from '../components/RecipeImage.jsx';
+import { titleCase } from '../utils/text.js';
 import FilterBar from '../components/FilterCustomizePanel.jsx';
 import ManageFiltersModal from '../components/ManageFiltersModal.jsx';
 import {
@@ -299,7 +300,7 @@ function RecipeCard({ recipe, onOpen, onFavorite }) {
         onClick={onOpen}
         style={{ cursor: 'pointer' }}
       >
-        {title}
+        {titleCase(title)}
       </div>
       <div className="recipe-card-meta" onClick={onOpen} style={{ cursor: 'pointer' }}>
         {minutes != null && <><span>{minutes} min</span><span>&middot;</span></>}

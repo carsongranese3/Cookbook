@@ -7,7 +7,9 @@
  *   isOffline — boolean
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { titleCase } from '../utils/text.js';
 import { api } from '../api.js';
+import ReceiptImportModal from '../components/ReceiptImportModal.jsx';
 
 // Feature flag: the "Running low" action (adds a pantry item to the shopping
 // list) is disabled for now. Flip to `true` to bring it back — all its code
@@ -35,7 +37,6 @@ const catOf = (it) =>
 function PantryFormModal({ item, onSave, onClose }) {
   const isEdit = Boolean(item);
   const [name, setName]         = useState(item?.name ?? '');
-  const [qty, setQty]           = useState(item?.qty ?? '');
   const [category, setCategory] = useState(item?.category ?? 'Other');
   const [saving, setSaving]     = useState(false);
   const [error, setError]       = useState('');
@@ -47,7 +48,7 @@ function PantryFormModal({ item, onSave, onClose }) {
     setSaving(true);
     setError('');
     try {
-      await onSave(item?.id ?? null, { name: trimmed, qty: qty.trim(), category });
+      await onSave(item?.id ?? null, { name: trimmed, category });
     } catch (err) {
       setError(err.message || 'Could not save item.');
       setSaving(false);
@@ -84,18 +85,6 @@ function PantryFormModal({ item, onSave, onClose }) {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Olive oil"
                 autoFocus
-                disabled={saving}
-              />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: 12 }}>
-              <label htmlFor="pantry-qty" className="form-label">Quantity <span className="form-hint">(optional)</span></label>
-              <input
-                id="pantry-qty"
-                className="form-input"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                placeholder="e.g. 1 bottle, half-full"
                 disabled={saving}
               />
             </div>
@@ -158,8 +147,7 @@ function PantryRow({ item, onEdit, onDelete, onRunningLow, isOffline }) {
   return (
     <>
       <div className="pantry-row">
-        <span className="pantry-row-name">{item.name}</span>
-        {item.qty && <span className="pantry-row-qty">{item.qty}</span>}
+        <span className="pantry-row-name">{titleCase(item.name)}</span>
 
         <div className="pantry-row-actions">
           {RUNNING_LOW_ENABLED && (
@@ -210,7 +198,7 @@ function PantryRow({ item, onEdit, onDelete, onRunningLow, isOffline }) {
           <div className="confirm-box">
             <p className="confirm-title">Remove from pantry?</p>
             <p className="confirm-msg">
-              &ldquo;{item.name}&rdquo; will be removed from your pantry.
+              &ldquo;{titleCase(item.name)}&rdquo; will be removed from your pantry.
             </p>
             <div className="confirm-actions">
               <button className="btn btn-ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
@@ -236,6 +224,7 @@ export default function PantryScreen({ isOffline }) {
   const [search, setSearch]     = useState('');
   const [formItem, setFormItem] = useState(undefined); // undefined=closed, null=new, item=edit
   const [formOpen, setFormOpen] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
 
   // Category toggle bar: which category sections are shown. Initialized once
   // from content — categories that have items start ON, empty ones start OFF.
@@ -318,6 +307,19 @@ export default function PantryScreen({ isOffline }) {
     return api.pantry.toShopping(id);
   }
 
+  // Receipt import: bulk-add the reviewed items, then refresh so the new rows
+  // appear. Reveal every category that gained an item — a receipt usually spans
+  // several, and some of them may be toggled off.
+  async function handleReceiptImport(items) {
+    const result = await api.pantry.bulkAdd(items);
+    await load();
+    const cats = new Set(items.map((it) => it.category).filter(Boolean));
+    if (cats.size > 0) {
+      setActiveCats((prev) => new Set([...prev, ...cats]));
+    }
+    return result;
+  }
+
   // Filter by search, then group by FIXED category order
   const searchLower = search.trim().toLowerCase();
   const filtered = searchLower
@@ -348,6 +350,14 @@ export default function PantryScreen({ isOffline }) {
         />
       )}
 
+      {receiptOpen && (
+        <ReceiptImportModal
+          categories={PANTRY_CATEGORIES}
+          onImported={handleReceiptImport}
+          onClose={() => setReceiptOpen(false)}
+        />
+      )}
+
       <div className="page-pad">
         {/* Header */}
         <div className="library-header">
@@ -367,15 +377,40 @@ export default function PantryScreen({ isOffline }) {
                 aria-label="Search pantry items"
               />
             </div>
+            <button
+              className="btn btn-secondary"
+              onClick={() => setReceiptOpen(true)}
+              disabled={isOffline}
+              title="Import groceries from a receipt photo"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ marginRight: 6 }}>
+                <path d="M6 2h12v20l-3-2-3 2-3-2-3 2V2z"/>
+                <path d="M9 7h6M9 11h6"/>
+              </svg>
+              Scan receipt
+            </button>
             <button className="btn btn-primary" onClick={openAdd} disabled={isOffline}>
               + Add item
             </button>
           </div>
 
-          {/* Phone: top-right add button */}
-          <button className="btn btn-primary header-add-btn" onClick={openAdd} disabled={isOffline}>
-            + Add
-          </button>
+          {/* Phone: top-right actions */}
+          <div className="header-phone-actions">
+            <button
+              className="btn btn-secondary header-add-btn header-icon-only"
+              onClick={() => setReceiptOpen(true)}
+              disabled={isOffline}
+              aria-label="Scan a receipt to import groceries"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M6 2h12v20l-3-2-3 2-3-2-3 2V2z"/>
+                <path d="M9 7h6M9 11h6"/>
+              </svg>
+            </button>
+            <button className="btn btn-primary header-add-btn" onClick={openAdd} disabled={isOffline}>
+              + Add
+            </button>
+          </div>
         </div>
 
         {/* Phone: full-width search (add button lives in the header, top-right) */}
@@ -416,7 +451,16 @@ export default function PantryScreen({ isOffline }) {
             <p style={{ margin: 0, color: 'var(--muted)' }}>
               Add ingredients you have on hand.
             </p>
-            <button className="btn btn-primary" onClick={openAdd}>Add item</button>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button className="btn btn-primary" onClick={openAdd}>Add item</button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setReceiptOpen(true)}
+                disabled={isOffline}
+              >
+                Scan a receipt
+              </button>
+            </div>
           </div>
         )}
 

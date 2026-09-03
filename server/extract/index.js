@@ -19,6 +19,13 @@
  *     2. Returns a draft recipe object (not persisted).
  *     The caller owns the temp file's lifecycle (multer, etc.).
  *
+ * Plus one function for the Pantry's receipt import:
+ *
+ *   extractReceipt(filePath, mimeType, categories)
+ *     A photo of a grocery receipt in, a list of grocery items out (not
+ *     persisted). Sends the image inline rather than via the Files API.
+ *     The caller owns the temp file's lifecycle.
+ *
  * Both functions resolve to a DraftRecipe on success, or throw an ExtractError
  * on failure. The ExtractError carries:
  *   err.code        ∈ { UNSUPPORTED_URL, FETCH_FAILED, NO_RECIPE, PARSE_FAILED, TIMEOUT, CONFIG }
@@ -38,6 +45,7 @@ import { extractWithGemini }                                     from './gemini.
 import { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
 export { ExtractError, CODES }                                   from './errors.js';
 export { assignFilters }                                         from './gemini.js';
+export { extractReceipt }                                        from './receipt.js';
 export { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
 
 // ---------------------------------------------------------------------------

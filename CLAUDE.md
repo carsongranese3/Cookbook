@@ -1,5 +1,7 @@
 # Project: Cookbook (design name: "Pantry")
 
+> **Team:** carson-team — agent files in `~/.claude/agents/carson-team/`.
+
 > Drop this file at the repo root. It is the single briefing every agent reads.
 > The agent files in `~/.claude/agents/` stay generic; this file is what makes the team
 > build *this* app.

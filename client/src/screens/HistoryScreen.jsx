@@ -10,6 +10,7 @@
  *   isOffline              — boolean
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { titleCase } from '../utils/text.js';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
 import { todayISO } from '../utils/week.js';
@@ -166,7 +167,7 @@ function EntryFormModal({ entry, prefill, recipes, onSave, onClose }) {
                     title={selectedRecipe.title}
                     style={{ width: 40, height: 40, borderRadius: 8, flexShrink: 0 }}
                   />
-                  <span className="hist-selected-title">{selectedRecipe.title}</span>
+                  <span className="hist-selected-title">{titleCase(selectedRecipe.title)}</span>
                   <button
                     type="button"
                     className="btn btn-ghost"
@@ -220,7 +221,7 @@ function EntryFormModal({ entry, prefill, recipes, onSave, onClose }) {
                           style={{ width: 36, height: 36, borderRadius: 7, flex: 'none' }}
                         />
                         <div>
-                          <div className="picker-recipe-title">{r.title}</div>
+                          <div className="picker-recipe-title">{titleCase(r.title)}</div>
                           {(r.minutes || r.cuisine) && (
                             <div className="picker-recipe-meta">
                               {r.minutes != null && `${r.minutes} min`}

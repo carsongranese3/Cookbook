@@ -934,6 +934,79 @@ De-duped by case-insensitive name (same logic as `POST /api/shopping-list/from-r
 
 ---
 
+### `POST /api/pantry/receipt`
+
+AI receipt import, step 1 of 2. Reads a photo of a grocery receipt with Gemini and returns the grocery items on it as a **draft** — **nothing is persisted**. The frontend shows the list for review, then sends the keepers to `POST /api/pantry/bulk`.
+
+Runs server-side only; the Gemini API key is never exposed to the browser. Unlike video extraction this sends the image **inline** rather than through the Gemini Files API.
+
+**Request:** `multipart/form-data` with a single file field named `receipt`.
+Accepted types: JPEG, PNG, WebP, HEIC/HEIF. **Max 12 MB.**
+
+The model is instructed to:
+- expand receipt abbreviations into plain names (`GV WHL MLK GAL` → `Whole milk`),
+- skip every non-grocery line (subtotal, tax, total, payment, loyalty, bag fees) **and** non-food goods (cleaning supplies, paper goods, toiletries, pet, pharmacy),
+- report the amount purchased in `qty`, converting any metric amount to imperial,
+- pick a `category` from the fixed pantry list.
+
+**Response 200:**
+```json
+{
+  "store": "Fresh Market",
+  "items": [
+    { "name": "Whole milk", "qty": "1 gal", "category": "Dairy & Eggs" },
+    { "name": "Boneless skinless chicken breast", "qty": "1.87 lb", "category": "Meat & Seafood" }
+  ]
+}
+```
+
+`store` is `""` when the store name is unreadable. `category` is always one of the fixed categories — when the model returns nothing usable, the server falls back to its own keyword guess (the same `guessCategory` used by `POST /api/shopping-list/from-recipe/:id`).
+
+**Errors** — same `{ error, code }` shape and code→status mapping as §8 AI Extract:
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `UNSUPPORTED_URL` | no file sent, or the file is not an image |
+| 413 | `FETCH_FAILED` | image over 12 MB |
+| 422 | `NO_RECIPE` | image read fine but held no grocery lines |
+| 422 | `PARSE_FAILED` | model output was not parseable JSON after one retry |
+| 429 | `RATE_LIMITED` | every model in the fallback chain is rate-limited |
+| 503 | `CONFIG` / `EXTRACT_UNAVAILABLE` | `GEMINI_API_KEY` unset, or the extract module failed to load |
+
+---
+
+### `POST /api/pantry/bulk`
+
+Add many pantry items in one transaction. Backs step 2 of the receipt import, but is a plain bulk-add usable by any caller.
+
+De-duped by **case-insensitive name**, both against the existing pantry and within the request itself. Existing items are left untouched — a duplicate is skipped, not updated.
+
+**Request body:**
+```json
+{
+  "items": [
+    { "name": "Whole milk", "qty": "1 gal", "category": "Dairy & Eggs" },
+    { "name": "Roma tomatoes", "qty": "2.14 lb" }
+  ]
+}
+```
+
+`name` is required per item; entries with a blank name are dropped. `qty` defaults to `""`. `category` is coerced to the fixed list (unknown → `Other`); when **omitted**, the server guesses from the name. Max **200** items per request.
+
+**Response 200:**
+```json
+{
+  "added":   [ { "id": "uuid", "name": "Whole milk", "qty": "1 gal", "category": "Dairy & Eggs", "position": 0, "created_at": "…", "updated_at": "…" } ],
+  "skipped": ["Roma tomatoes"]
+}
+```
+
+`added` holds the full created pantry items; `skipped` holds the **names** that were already in the pantry.
+
+**Response 400** — `{ "error": "items must be an array" }` or `{ "error": "Too many items — 200 max per request." }`
+
+---
+
 ## 8. AI Extract
 
 Runs server-side only. The Gemini API key is never exposed to the browser.

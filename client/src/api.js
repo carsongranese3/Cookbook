@@ -1,6 +1,22 @@
 // Thin wrapper around the backend REST API. Uses relative /api URLs so the
 // Vite dev proxy (and, in production, same-origin hosting) handles routing.
 
+// Multipart POST — used by the uploads (video extraction, receipt scan), which
+// send a File rather than JSON. Mirrors `request`'s error shape.
+async function upload(path, field, file) {
+  const fd = new FormData();
+  fd.append(field, file);
+  const res = await fetch(`/api${path}`, { method: 'POST', body: fd });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(body?.error || `Upload failed (${res.status})`);
+    err.code = body?.code || null;
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -66,6 +82,10 @@ export const api = {
     update:     (id, body) => request(`/pantry/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     remove:     (id)       => request(`/pantry/${id}`, { method: 'DELETE' }),
     toShopping: (id)       => request(`/pantry/${id}/to-shopping`, { method: 'POST' }),
+    // Receipt import: scan returns a DRAFT ({ store, items }) — nothing is saved
+    // until the reviewed items come back through bulkAdd.
+    scanReceipt: (file)    => upload('/pantry/receipt', 'receipt', file),
+    bulkAdd:     (items)   => request('/pantry/bulk', { method: 'POST', body: JSON.stringify({ items }) }),
   },
 
   // Filters (user-defined)
@@ -96,19 +116,6 @@ export const api = {
   extract: {
     fromUrl: (url) =>
       request('/extract', { method: 'POST', body: JSON.stringify({ url }) }),
-    fromFile: (file) => {
-      const fd = new FormData();
-      fd.append('video', file);
-      return fetch('/api/extract/upload', { method: 'POST', body: fd }).then(async (res) => {
-        const body = await res.json().catch(() => null);
-        if (!res.ok) {
-          const err = new Error(body?.error || `Upload failed (${res.status})`);
-          err.code = body?.code || null;
-          err.status = res.status;
-          throw err;
-        }
-        return body;
-      });
-    },
+    fromFile: (file) => upload('/extract/upload', 'video', file),
   },
 };

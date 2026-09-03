@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import AppShell from './components/AppShell.jsx';
 import Library from './screens/Library.jsx';
 import RecipeDetail from './screens/RecipeDetail.jsx';
@@ -17,17 +17,54 @@ import { getCurrentWeekDates, todayISO } from './utils/week.js';
  *   tab:     library | plan | shopping | pantry | add | history
  *   view:    list | detail | form | cooking
  *   activeId: recipe id in context
+ *
+ * URL routing maps this state to a path (and back), so every screen is
+ * bookmarkable/shareable and the browser Back/Forward buttons work.
  */
+const TAB_PATHS = {
+  library: '/',
+  plan: '/plan',
+  shopping: '/shopping',
+  pantry: '/pantry',
+  history: '/history',
+  add: '/add',
+};
+
+/** (tab, view, activeId) → URL path. */
+function pathForState(tab, view, activeId) {
+  if (view === 'detail' && activeId) return `/recipe/${activeId}`;
+  if (view === 'cooking' && activeId) return `/recipe/${activeId}/cook`;
+  if (view === 'form') return activeId ? `/recipe/${activeId}/edit` : '/new';
+  return TAB_PATHS[tab] || '/';
+}
+
+/** URL path → { tab, view, activeId }. Unknown paths fall back to the library. */
+function stateFromPath(pathname) {
+  const p = pathname.replace(/\/+$/, '') || '/';
+  const rec = p.match(/^\/recipe\/([^/]+)(\/edit|\/cook)?$/);
+  if (rec) {
+    const activeId = decodeURIComponent(rec[1]);
+    if (rec[2] === '/edit') return { tab: 'library', view: 'form', activeId };
+    if (rec[2] === '/cook') return { tab: 'library', view: 'cooking', activeId };
+    return { tab: 'library', view: 'detail', activeId };
+  }
+  if (p === '/new') return { tab: 'library', view: 'form', activeId: null };
+  const entry = Object.entries(TAB_PATHS).find(([, path]) => path === p);
+  if (entry) return { tab: entry[0], view: 'list', activeId: null };
+  return { tab: 'library', view: 'list', activeId: null };
+}
+
 export default function App() {
   // ── Recipe collection (fetched once, kept fresh) ────────────────────────
   const [recipes, setRecipes]         = useState([]);
   const [recipesLoading, setRL]       = useState(true);
   const [recipesError, setRE]         = useState('');
 
-  // ── Navigation state ────────────────────────────────────────────────────
-  const [tab, setTab]       = useState('library'); // library | plan | shopping | add | history
-  const [view, setView]     = useState('list');    // list | detail | form | cooking
-  const [activeId, setAI]   = useState(null);
+  // ── Navigation state (seeded from the URL for deep-linking) ───────────────
+  const initialRoute = stateFromPath(window.location.pathname);
+  const [tab, setTab]       = useState(initialRoute.tab);   // library | plan | shopping | pantry | add | history
+  const [view, setView]     = useState(initialRoute.view);  // list | detail | form | cooking
+  const [activeId, setAI]   = useState(initialRoute.activeId);
   const [newMode, setNewMode] = useState('manual'); // manual | import — for the New recipe screen
 
   // ── Single recipe fetch (for detail / edit after deep-link) ────────────
@@ -89,6 +126,46 @@ export default function App() {
       setDL(false);
     }
   }, []);
+
+  // ── URL routing ───────────────────────────────────────────────────────────
+  // Set true right before a popstate-driven state change so the sync effect
+  // below doesn't push a duplicate history entry for it.
+  const skipPush = useRef(false);
+
+  // On first load: hydrate a deep-linked recipe and seed a history state object.
+  useEffect(() => {
+    if (initialRoute.activeId) loadDetail(initialRoute.activeId);
+    window.history.replaceState({ app: true }, '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Push a new URL whenever navigation state changes (unless it came from Back).
+  useEffect(() => {
+    if (skipPush.current) { skipPush.current = false; return; }
+    const path = pathForState(tab, view, activeId);
+    if (window.location.pathname !== path) {
+      window.history.pushState({ app: true }, '', path);
+    }
+  }, [tab, view, activeId]);
+
+  // Back/Forward: restore navigation state from the URL.
+  useEffect(() => {
+    function onPop() {
+      const s = stateFromPath(window.location.pathname);
+      skipPush.current = true;
+      setTab(s.tab);
+      setView(s.view);
+      setAI(s.activeId);
+      if (s.activeId) {
+        loadDetail(s.activeId);
+      } else {
+        setDR(null);
+        setDE('');
+      }
+    }
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [loadDetail]);
 
   // ── Navigation helpers ──────────────────────────────────────────────────
   function goTab(t) {
@@ -307,19 +384,10 @@ export default function App() {
 
         {/* ── Add from Video ── */}
         {tab === 'add' && view === 'list' && (
-          <>
-            <AddFromVideo
-              onSaved={handleAiSaved}
-              isOffline={isOffline}
-            />
-            {/* Phone: secondary "Enter manually" link */}
-            <div id="ph-manual-link-wrap" style={{ display: 'none', padding: '0 20px 20px' }}>
-              <style>{`@media (max-width:767px){#ph-manual-link-wrap{display:block}}`}</style>
-              <button className="ph-manual-link" onClick={openNew}>
-                or enter a recipe manually
-              </button>
-            </div>
-          </>
+          <AddFromVideo
+            onSaved={handleAiSaved}
+            isOffline={isOffline}
+          />
         )}
 
         {/* ── Pantry ── */}

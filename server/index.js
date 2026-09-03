@@ -40,6 +40,21 @@ const upload = multer({
   limits: { fileSize: 200 * 1024 * 1024 }, // 200 MB
 });
 
+// Multer — receipt photos for the Pantry import. Much smaller than videos, and
+// restricted to images so a stray video upload fails fast instead of burning a
+// Gemini call. HEIC/HEIF are included: that is what an iPhone camera produces.
+const RECEIPT_MAX_BYTES = 12 * 1024 * 1024; // 12 MB — matches extract/receipt.js
+const uploadImage = multer({
+  dest: tmpdir(),
+  limits: { fileSize: RECEIPT_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const ok = /^image\//i.test(file.mimetype) ||
+      /\.(jpe?g|png|webp|heic|heif)$/i.test(file.originalname ?? '');
+    if (ok) return cb(null, true);
+    cb(new MulterError('LIMIT_UNEXPECTED_FILE', 'receipt'));
+  },
+});
+
 // ===========================================================================
 // Video media storage (Cook Mode) — server/media/<recipeId>.mp4, drafts at
 // server/media/drafts/<token>.mp4 until a recipe is saved and claims one.
@@ -1615,6 +1630,148 @@ app.post('/api/pantry/:id/to-shopping', (req, res) => {
   res.status(201).json(rowToShoppingItem(row));
 });
 
+// ===========================================================================
+// Pantry — receipt import (AI)
+// ===========================================================================
+
+// POST /api/pantry/receipt — read a photo of a grocery receipt and return the
+// grocery items on it as a DRAFT. Nothing is persisted here: the client shows
+// the list for review, then posts the keepers to /api/pantry/bulk.
+app.post('/api/pantry/receipt', uploadImage.single('receipt'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No receipt image uploaded.', code: 'UNSUPPORTED_URL' });
+  }
+
+  const tempPath = req.file.path;
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    await unlink(tempPath).catch(() => {});
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+
+  // Gemini needs a real image/* MIME. Browsers and the iOS share sheet
+  // sometimes send application/octet-stream, so fall back to the extension.
+  const rawMime = req.file.mimetype;
+  const extMime = /\.hei[cf]$/i.test(req.file.originalname ?? '') ? 'image/heic'
+    : /\.png$/i.test(req.file.originalname ?? '')                 ? 'image/png'
+    : /\.webp$/i.test(req.file.originalname ?? '')                ? 'image/webp'
+    : 'image/jpeg';
+  const mimeType = (rawMime && rawMime.startsWith('image/')) ? rawMime : extMime;
+
+  try {
+    const receipt = await mod.extractReceipt(tempPath, mimeType, PANTRY_CATEGORIES);
+    // The model returns null for a category it couldn't place; fall back to the
+    // server's own keyword guess rather than dumping everything into "Other".
+    const items = receipt.items.map((it) => ({
+      name:     it.name,
+      qty:      it.qty,
+      category: it.category ?? guessCategory(it.name),
+    }));
+    res.json({ store: receipt.store, items });
+  } catch (err) {
+    if (err.code && err.userMessage) {
+      console.warn(`[pantry/receipt] ${err.code}: ${err.message}`);
+      return res.status(extractCodeToStatus(err.code)).json({
+        error: err.userMessage,
+        code:  err.code,
+      });
+    }
+    console.error('[pantry/receipt] Unexpected error:', err);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+  } finally {
+    // Always clean up the temp file.
+    await unlink(tempPath).catch(() => {});
+  }
+});
+
+// POST /api/pantry/bulk — add many pantry items in one transaction.
+// Backs the receipt-import review step, but is a plain bulk-add: it takes
+// { items: [{ name, qty, category }] } from any caller.
+// De-duped by case-insensitive name, both against the existing pantry and
+// within the request itself. Returns what landed and what was skipped.
+const MAX_BULK_PANTRY_ITEMS = 200;
+
+app.post('/api/pantry/bulk', (req, res) => {
+  const raw = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!raw) {
+    return res.status(400).json({ error: 'items must be an array' });
+  }
+  if (raw.length > MAX_BULK_PANTRY_ITEMS) {
+    return res.status(400).json({
+      error: `Too many items — ${MAX_BULK_PANTRY_ITEMS} max per request.`,
+    });
+  }
+
+  // Normalize, dropping blanks and de-duping within the request.
+  const seenInBatch = new Set();
+  const candidates  = [];
+  for (const entry of raw) {
+    const name = String(entry?.name ?? '').trim();
+    if (!name) continue;
+
+    const key = name.toLowerCase();
+    if (seenInBatch.has(key)) continue;
+    seenInBatch.add(key);
+
+    const rawCat = String(entry?.category ?? '').trim();
+    candidates.push({
+      name,
+      qty:      String(entry?.qty ?? '').trim(),
+      category: rawCat ? coerceCategory(rawCat) : guessCategory(name),
+    });
+  }
+
+  if (candidates.length === 0) {
+    return res.json({ added: [], skipped: [] });
+  }
+
+  // Existing pantry names, lowercased, for the de-dupe.
+  const existingNames = new Set(
+    db.prepare('SELECT name FROM pantry').all().map((r) => r.name.toLowerCase())
+  );
+
+  // Next free position per category, so a batch doesn't collide on position.
+  const nextPos = new Map(
+    db
+      .prepare('SELECT category, COALESCE(MAX(position), -1) AS mp FROM pantry GROUP BY category')
+      .all()
+      .map((r) => [r.category, r.mp + 1])
+  );
+
+  const insert = db.prepare(
+    'INSERT INTO pantry (id, name, qty, category, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+
+  const now      = new Date().toISOString();
+  const addedIds = [];
+  const skipped  = [];
+
+  const runBatch = db.transaction(() => {
+    for (const item of candidates) {
+      if (existingNames.has(item.name.toLowerCase())) {
+        skipped.push(item.name);
+        continue;
+      }
+      const position = nextPos.get(item.category) ?? 0;
+      nextPos.set(item.category, position + 1);
+
+      const id = randomUUID();
+      insert.run(id, item.name, item.qty, item.category, position, now, now);
+      addedIds.push(id);
+    }
+  });
+  runBatch();
+
+  const getRow = db.prepare('SELECT * FROM pantry WHERE id = ?');
+  const added  = addedIds.map((id) => rowToPantryItem(getRow.get(id)));
+
+  res.json({ added, skipped });
+});
+
 // POST /api/shopping-list/move-to-pantry — move all CHECKED shopping items into the pantry.
 // NOTE: registered here (after shopping-list routes) but under /api/shopping-list/* to keep
 // routes semantically grouped. Express matches routes in registration order; since
@@ -1897,10 +2054,22 @@ if (existsSync(clientDist)) {
 // eslint-disable-next-line no-unused-vars -- Express requires the 4-arg signature.
 app.use((err, req, res, next) => {
   if (err instanceof MulterError) {
+    // Receipt photos have their own, much smaller limit — say so, rather than
+    // quoting the 200 MB video limit at someone uploading a picture.
+    const isReceipt = err.field === 'receipt';
+
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
-        error: 'That video is too large. The limit is 200 MB — upload a shorter clip.',
+        error: isReceipt
+          ? `That photo is too large. The limit is ${Math.round(RECEIPT_MAX_BYTES / (1024 * 1024))} MB.`
+          : 'That video is too large. The limit is 200 MB — upload a shorter clip.',
         code: 'FETCH_FAILED',
+      });
+    }
+    if (isReceipt && err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        error: "That file isn't an image. Upload a photo of the receipt (JPEG, PNG, HEIC).",
+        code: 'UNSUPPORTED_URL',
       });
     }
     return res.status(400).json({ error: 'Upload failed.', code: 'FETCH_FAILED' });
