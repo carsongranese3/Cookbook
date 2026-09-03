@@ -134,10 +134,26 @@ a:hover { color: var(--accent-dark); }
 .sidebar-footer {
   margin-top: auto;
   padding: 12px 10px;
+  border: none;
   border-top: 1px solid var(--border);
+  border-radius: 0;
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.sidebar-footer:hover { background: var(--fill); }
+
+.sidebar-footer:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .sidebar-avatar {
@@ -175,10 +191,13 @@ a:hover { color: var(--accent-dark); }
   height: 100%;
 }
 
-/* Phone: below tab bar */
+/* Phone: below tab bar, and below the fixed settings-gear strip up top so no
+   screen's own header content — including its top-right action button —
+   ever sits under the gear (see .phone-settings-btn). */
 @media (max-width: 767px) {
   .main-scroll {
     padding-bottom: calc(62px + env(safe-area-inset-bottom));
+    padding-top: calc(46px + env(safe-area-inset-top));
   }
 }
 
@@ -241,6 +260,46 @@ a:hover { color: var(--accent-dark); }
 @media (max-width: 767px) {
   .sidebar { display: none; }
   .tab-bar { display: flex; }
+}
+
+/* ── Phone settings gear ──────────────────────────────────────────────────
+   Global entry point to Settings on phone (desktop uses the sidebar's "My
+   Kitchen" button instead). Lives fixed in its own reserved strip above all
+   page content — not inside any screen's own `library-header` — so it can
+   never collide with a screen's top-right header action (Shopping List's
+   "+ Add", Library's "+ New", Pantry's receipt/add pair). `.main-scroll`
+   reserves the matching space via `padding-top`, the same way it already
+   reserves space at the bottom for the fixed tab bar. */
+.phone-settings-btn { display: none; }
+
+@media (max-width: 767px) {
+  .phone-settings-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: calc(9px + env(safe-area-inset-top));
+    left: 14px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    color: var(--body);
+    cursor: pointer;
+    z-index: 150;
+  }
+
+  .phone-settings-btn:hover,
+  .phone-settings-btn:focus-visible {
+    color: var(--accent);
+  }
+
+  .phone-settings-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 }
 
 /* ── Eyebrow ────────────────────────────────────────────────────────────── */
@@ -1555,7 +1614,45 @@ a:hover { color: var(--accent-dark); }
   }
 }
 
+/* ── Settings modal ─────────────────────────────────────────────────────── */
+.settings-modal {
+  width: 420px;
+}
+
+@media (max-width: 767px) {
+  .settings-modal {
+    width: 100%;
+  }
+}
+
+.settings-section-label {
+  font: 600 10px 'Onest';
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--label);
+  margin-bottom: 12px;
+}
+
+/* Room to grow: later sections stack with a divider, matching mf-body's rhythm. */
+.settings-section + .settings-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-light);
+}
+
 /* ── Shopping List ──────────────────────────────────────────────────────── */
+
+/* Add-item form modal (mirrors .pantry-form-modal) */
+.shop-form-modal {
+  width: 420px;
+}
+
+@media (max-width: 767px) {
+  .shop-form-modal {
+    width: 100%;
+  }
+}
+
 .shop-header {
   display: flex;
   justify-content: space-between;
@@ -1686,6 +1783,138 @@ a:hover { color: var(--accent-dark); }
   .shop-item-delete { opacity: 1; }
   .add-item-row { margin-top: 14px; }
   .shop-list { margin-top: 12px; }
+}
+
+/* ── Shopping List — price estimation ───────────────────────────────────── */
+/* A real <button>, not a <span>: tapping it (or the — on an unpriced row)
+   opens the inline manual-price editor. Negative margin keeps the larger tap
+   target from widening the row on narrow phones. */
+.shop-item-price {
+  font: 400 12px 'Onest';
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  margin: -4px -2px;
+  border-radius: 6px;
+  min-height: 28px;
+  min-width: 28px;
+  justify-content: flex-end;
+}
+
+.shop-item-price:hover:not(:disabled) {
+  background: var(--fill);
+}
+
+.shop-item-price:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.shop-item-price:disabled {
+  cursor: default;
+}
+
+.shop-item-price.checked {
+  color: var(--muted);
+}
+
+/* Manual price marker — subtle: accent color + a small leading dot, so a
+   number the user typed is never mistaken for the AI estimate. */
+.shop-item-price.manual {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.shop-item-price-dot {
+  font-size: 8px;
+  line-height: 1;
+}
+
+.shop-item-price-edit {
+  flex-shrink: 0;
+}
+
+.shop-item-price-input {
+  width: 64px;
+  font: 400 12px 'Onest';
+  padding: 4px 6px;
+  border: 1.5px solid var(--accent);
+  border-radius: 6px;
+  outline: none;
+  background: #fff;
+  color: var(--text);
+  text-align: right;
+}
+
+.shop-item-price-error {
+  margin: -4px 0 8px;
+  padding: 0 2px;
+  font: 400 11px 'Onest';
+  color: var(--danger);
+}
+
+/* Store picker modal (mirrors .shop-form-modal) */
+.store-picker-modal {
+  width: 420px;
+}
+
+@media (max-width: 767px) {
+  .store-picker-modal {
+    width: 100%;
+  }
+}
+
+/* Estimate total block, below .shop-actions */
+.shop-estimate {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--fill);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shop-estimate-total {
+  margin: 0;
+  font: 600 13px 'Onest';
+  color: var(--text);
+}
+
+.shop-estimate-unpriced,
+.shop-estimate-disclaimer {
+  margin: 0;
+  font: 400 12px 'Onest';
+  color: var(--muted);
+}
+
+.shop-estimate-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  min-height: 32px;
+}
+
+.shop-estimate-toggle {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.shop-estimate-toggle-row label {
+  font: 400 12px 'Onest';
+  color: var(--body);
+  cursor: pointer;
 }
 
 /* ── Cooking Mode ───────────────────────────────────────────────────────── */

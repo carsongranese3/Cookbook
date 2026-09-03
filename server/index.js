@@ -1234,6 +1234,542 @@ app.post('/api/shopping-list/clear-checked', (_req, res) => {
   res.json({ deleted: result.changes });
 });
 
+// ---------------------------------------------------------------------------
+// Shopping List — price estimation (store settings + Gemini-priced estimate)
+// ---------------------------------------------------------------------------
+
+// Generic key/value settings helpers, backing `shopping.store` / `shopping.zip`.
+function getSetting(key, fallback = '') {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+function setSetting(key, value) {
+  db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(key, value);
+}
+
+// Normalization helpers (see docs/data-shapes.md §Price book).
+function normalizeName(s) {
+  return String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function normalizeStoreName(s) {
+  return String(s ?? '').trim().replace(/\s+/g, ' ');
+}
+function normalizeZipValue(s) {
+  return String(s ?? '').trim();
+}
+
+// Curated national chain list — server-side only (see docs/api.md §5).
+const CURATED_STORES = [
+  'Aldi', 'Costco', 'Food Lion', 'Giant', 'H-E-B', 'Hannaford', 'Harris Teeter',
+  'Kroger', 'Market Basket', 'Meijer', 'Publix', 'Safeway', "Sam's Club",
+  'ShopRite', 'Sprouts', 'Stop & Shop', 'Target', "Trader Joe's", 'Walmart',
+  'Wegmans', 'Whole Foods Market',
+];
+
+const PRICE_STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MAX_ESTIMATE_ITEMS = 60;
+
+// Module-level in-flight guard — quota protection, not a security control.
+// The client also disables the button while pending.
+let estimateInFlight = false;
+
+// GET /api/shopping-list/store
+app.get('/api/shopping-list/store', (_req, res) => {
+  res.json({
+    store: getSetting('shopping.store', ''),
+    zip: getSetting('shopping.zip', ''),
+    stores: CURATED_STORES,
+  });
+});
+
+// PUT /api/shopping-list/store
+app.put('/api/shopping-list/store', (req, res) => {
+  const rawStore = req.body?.store;
+  if (typeof rawStore !== 'string') {
+    return res.status(400).json({ error: 'Pick a store.' });
+  }
+  const store = normalizeStoreName(rawStore);
+  if (!store || store.length > 60 || /[\x00-\x1f\x7f]/.test(store)) {
+    return res.status(400).json({ error: 'Pick a store.' });
+  }
+
+  // zip is optional in the body — when the key is absent, keep whatever is
+  // already stored; when present (including ""), it sets/clears explicitly.
+  const zip = 'zip' in (req.body ?? {})
+    ? normalizeZipValue(req.body.zip)
+    : getSetting('shopping.zip', '');
+  if (zip !== '' && !/^\d{5}$/.test(zip)) {
+    return res.status(400).json({ error: 'ZIP must be 5 digits.' });
+  }
+
+  setSetting('shopping.store', store);
+  setSetting('shopping.zip', zip);
+
+  res.json({ store, zip, stores: CURATED_STORES });
+});
+
+// GET /api/shopping-list/prices — read-only hydration from the price_book
+// cache for every item currently on the list. This NEVER calls Gemini and
+// NEVER writes to price_book: it is a plain SELECT, structurally incapable of
+// spending quota, which is exactly why it is a separate route rather than a
+// `cachedOnly` flag on POST /estimate. Do not import or call the pricing
+// module (`getExtractModule` / `estimatePrices`) anywhere in this handler.
+//
+// Deliberately ignores the 30-day staleness window that POST /estimate
+// enforces (see docs/decisions.md "2026-09-02 — Prices persist per item, not
+// per estimate"). Both routes read the exact same price_book rows and are
+// allowed — on purpose — to answer differently: this route means "show me
+// whatever you have, no matter how old, because a price must never silently
+// vanish from the screen"; POST /estimate means "fill gaps and refresh
+// anything stale, because a press should be able to update an old number".
+// Do NOT add an `updated_at` age check here to "match" the estimate route —
+// that would make prices disappear on reload, which is the exact bug this
+// endpoint exists to fix. If you're tempted to unify the two lookups behind
+// one helper, keep the staleness test as a parameter the estimate route
+// passes and this route does not, rather than hard-coding it into the shared
+// helper.
+//
+// No `estimateInFlight` guard: this is a read and must never block on, or be
+// blocked by, a concurrent POST /estimate.
+//
+// Pulled out into a helper (`buildPricesPayload`) so that
+// `PUT /api/shopping-list/:id/price` (manual price entry/clear) can return
+// the exact same shape after it writes/deletes one price_book row — per the
+// spec, a manual-price write replaces the client's whole price snapshot
+// rather than patching one entry, so both routes must produce an identical
+// payload from an identical query.
+function buildPricesPayload() {
+  const store = getSetting('shopping.store', '');
+  const zip = getSetting('shopping.zip', '');
+  const normStore = normalizeStoreName(store);
+  const normZip = normalizeZipValue(zip);
+
+  const rows = db
+    .prepare('SELECT * FROM shopping_list ORDER BY position, rowid')
+    .all();
+
+  const lookupStmt = db.prepare(
+    'SELECT * FROM price_book WHERE store = ? AND zip = ? AND name_key = ? AND qty_key = ?'
+  );
+
+  let total = 0;
+  let totalUnchecked = 0;
+  let pricedCount = 0;
+  let unpricedCount = 0;
+
+  // No store set is a normal empty state (per-item price: null), not a 400 —
+  // unlike POST /estimate, which needs a store to build a Gemini prompt, a
+  // read of an unconfigured app has nothing to look up and that's fine.
+  const items = rows.map((row) => {
+    const checked = row.checked === 1;
+    const qty = String(row.qty ?? '').trim();
+    let price = null;
+    let qtyPriced = null;
+    let updatedAt = null;
+    let source = null;
+
+    if (store) {
+      const nameKey = normalizeName(row.name);
+      // Looked up by qty_key (the row's own, current qty) exactly as
+      // POST /estimate does — but with NO `updated_at` comparison against
+      // PRICE_STALE_MS. That omission is the entire point of this route;
+      // see the staleness note above the route.
+      const cacheRow = lookupStmt.get(normStore, normZip, nameKey, qty);
+      if (cacheRow) {
+        price = cacheRow.unit_price;
+        qtyPriced = cacheRow.qty_priced;
+        updatedAt = cacheRow.updated_at;
+        source = cacheRow.source ?? 'ai';
+      }
+    }
+
+    if (typeof price === 'number') {
+      pricedCount += 1;
+      total += price;
+      if (!checked) totalUnchecked += price;
+    } else {
+      unpricedCount += 1;
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      qty: row.qty ?? '',
+      checked,
+      qty_priced: qtyPriced,
+      price,
+      source,
+      updated_at: updatedAt,
+    };
+  });
+
+  return {
+    store,
+    zip,
+    items,
+    total: Math.round(total * 100) / 100,
+    total_unchecked: Math.round(totalUnchecked * 100) / 100,
+    priced_count: pricedCount,
+    unpriced_count: unpricedCount,
+  };
+}
+
+app.get('/api/shopping-list/prices', (_req, res) => {
+  res.json(buildPricesPayload());
+});
+
+// PUT /api/shopping-list/:id/price — set or clear a MANUAL price for one
+// shopping-list item. A manual price is just a price_book row for that
+// item's current (store, zip, name_key, qty_key) key with source: 'manual'
+// — not a column on shopping_list — so it hydrates, totals, persists across
+// reload, and clears on a qty/store change through the exact same paths an
+// AI price already does (see docs/decisions.md "2026-09-03 — Manual prices").
+//
+// Body `{ price: <number> }` upserts a manual price_book row.
+// Body `{ price: null }` deletes it — this is how the UI undoes a manual
+// entry and lets the item go back to unpriced.
+//
+// Deliberately reuses `coercePrice` from extract/price.js (the exact
+// validator POST /estimate trusts before writing to price_book) rather than
+// writing a second one — that function already fixed a real bug
+// (`Number(null) === 0` silently becoming a cached $0.00). The one
+// intentional difference: the AI path never accepts an exact `0` (it can
+// only mean "the model failed to price this"), but a human typing `0`
+// manually is a real, meaningful signal — free / already owned / not being
+// paid for — so this route passes `{ allowZero: true }`.
+app.put('/api/shopping-list/:id/price', async (req, res) => {
+  const item = db.prepare('SELECT * FROM shopping_list WHERE id = ?').get(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: 'Shopping list item not found.' });
+  }
+
+  const store = getSetting('shopping.store', '');
+  if (!store) {
+    // Same guard, same code, same client behavior (opens the store picker)
+    // as POST /estimate in this state — prices are keyed per store+ZIP, so
+    // with no store there is nowhere to put a manual price either.
+    return res.status(400).json({ error: 'Pick a store first.', code: 'NO_STORE' });
+  }
+
+  const body = req.body ?? {};
+  if (!('price' in body)) {
+    return res.status(400).json({ error: 'price is required.' });
+  }
+
+  const zip = getSetting('shopping.zip', '');
+  const normStore = normalizeStoreName(store);
+  const normZip = normalizeZipValue(zip);
+  const nameKey = normalizeName(item.name);
+  const qtyKey = String(item.qty ?? '').trim();
+
+  if (body.price === null) {
+    // Clear: delete the price_book row for this item's current key so it
+    // reverts to unpriced, regardless of whether it was 'ai' or 'manual'.
+    db.prepare(
+      'DELETE FROM price_book WHERE store = ? AND zip = ? AND name_key = ? AND qty_key = ?'
+    ).run(normStore, normZip, nameKey, qtyKey);
+    return res.json(buildPricesPayload());
+  }
+
+  const mod = await getExtractModule();
+  if (!mod) {
+    return res.status(503).json({
+      error: 'Extraction service is not configured on this server.',
+      code: 'EXTRACT_UNAVAILABLE',
+    });
+  }
+  const price = mod.coercePrice(body.price, { allowZero: true });
+  if (price === null) {
+    return res.status(400).json({ error: 'Enter a valid price.' });
+  }
+
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO price_book (id, store, zip, name_key, name, qty_key, qty_priced, unit_price, currency, source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'manual', ?)
+    ON CONFLICT(store, zip, name_key, qty_key) DO UPDATE SET
+      name = excluded.name,
+      qty_priced = excluded.qty_priced,
+      unit_price = excluded.unit_price,
+      currency = excluded.currency,
+      source = excluded.source,
+      updated_at = excluded.updated_at
+  `).run(
+    randomUUID(), normStore, normZip, nameKey, item.name, qtyKey, qtyKey, price, nowIso
+  );
+
+  res.json(buildPricesPayload());
+});
+
+// POST /api/shopping-list/estimate — price the whole list (every item,
+// regardless of `checked`), using the price_book cache and Gemini for misses.
+app.post('/api/shopping-list/estimate', async (req, res) => {
+  if (estimateInFlight) {
+    return res.status(409).json({
+      error: 'An estimate is already running.',
+      code: 'ESTIMATE_IN_PROGRESS',
+    });
+  }
+
+  const store = getSetting('shopping.store', '');
+  if (!store) {
+    return res.status(400).json({ error: 'Pick a store first.', code: 'NO_STORE' });
+  }
+  const zip = getSetting('shopping.zip', '');
+  const refresh = req.body?.refresh === true;
+
+  const normStore = normalizeStoreName(store);
+  const normZip = normalizeZipValue(zip);
+
+  const rows = db
+    .prepare('SELECT * FROM shopping_list ORDER BY position, rowid')
+    .all();
+
+  const estimatedAt = new Date().toISOString();
+
+  if (rows.length === 0) {
+    return res.json({
+      store, zip, currency: 'USD',
+      items: [],
+      total: 0,
+      total_unchecked: 0,
+      priced_count: 0,
+      unpriced_count: 0,
+      estimated_at: estimatedAt,
+      gemini_calls: 0,
+    });
+  }
+
+  estimateInFlight = true;
+  try {
+    const nowMs = Date.now();
+    const staleBefore = nowMs - PRICE_STALE_MS;
+
+    // resolved: row id -> { price, qty_priced, cached, updated_at }
+    const resolved = new Map();
+    // missRowsByKey: "name_key qty" -> rows sharing BOTH that name and
+    // that exact REQUESTED qty (qty_key), in position order. Grouping on
+    // name alone let two rows with the same name but different qty
+    // ("Milk" 1 gal vs 2 gal) fight over the single price_book row keyed by
+    // name — whichever was priced last would silently overwrite the other's
+    // cached price, so the loser was re-priced (a real Gemini call) on every
+    // single press forever. Grouping — and the price_book unique index —
+    // include qty_key, so "Milk" x2 with the SAME qty still collapses to one
+    // prompt entry (and one cached price shared by both rows, spec §7
+    // hazard a / AC-24), but different qtys for the same name get their own
+    // cache lines and don't fight. qty_key is the row's REQUESTED qty
+    // verbatim ('' allowed) — deliberately NOT qty_priced (the model's
+    // assumed/echoed qty), which is display-only provenance; conflating the
+    // two meant a blank-qty item's cache row was unfindable by its own
+    // (blank) qty and re-priced forever. Tradeoff (approved): a qty edit
+    // leaves the old (name, old qty_key) row behind rather than overwriting
+    // it in place; it ages out at 30 days.
+    const missRowsByKey = new Map();
+
+    const lookupStmt = db.prepare(
+      'SELECT * FROM price_book WHERE store = ? AND zip = ? AND name_key = ? AND qty_key = ?'
+    );
+
+    for (const row of rows) {
+      const nameKey = normalizeName(row.name);
+      const qty = String(row.qty ?? '').trim();
+      // Looked up by qty_key — the REQUESTED qty (verbatim, '' allowed) —
+      // never by qty_priced, which is the model's assumed/echoed qty and is
+      // display-only provenance. Conflating the two used to mean a blank-qty
+      // item (qty_key would've had to be '') was stored under whatever the
+      // model assumed ("1 each"), so "" never matched "1 each" and the item
+      // re-priced on every single press forever, permanently defeating the
+      // cache for any item added without a qty. A hit already implies
+      // qty_key === qty by construction — no separate JS-side comparison needed.
+      const cacheRow = lookupStmt.get(normStore, normZip, nameKey, qty);
+
+      // A manual price (source: 'manual') is ALWAYS a miss here, regardless
+      // of age — "estimate overwrites manual" is meant literally (see
+      // docs/decisions.md "2026-09-03 — Manual prices"). It falls straight
+      // into the normal batch/grouping path below like any other miss, so it
+      // gets re-priced by Gemini this press and flips back to source: 'ai'.
+      const isHit = !refresh
+        && cacheRow
+        && cacheRow.source !== 'manual'
+        && new Date(cacheRow.updated_at).getTime() > staleBefore;
+
+      if (isHit) {
+        resolved.set(row.id, {
+          price: cacheRow.unit_price,
+          qty_priced: cacheRow.qty_priced,
+          cached: true,
+          updated_at: cacheRow.updated_at,
+          source: cacheRow.source ?? 'ai',
+        });
+      } else {
+        const groupKey = `${nameKey}\u0000${qty}`;
+        if (!missRowsByKey.has(groupKey)) missRowsByKey.set(groupKey, { nameKey, rows: [] });
+        missRowsByKey.get(groupKey).rows.push(row);
+      }
+    }
+
+    // Cap the Gemini batch to MAX_ESTIMATE_ITEMS distinct missing names, in
+    // list position order (first-seen order of missRowsByKey, since rows
+    // were iterated in position order above). Overflow comes back unpriced.
+    const missKeys = [...missRowsByKey.keys()];
+    const batchKeys = missKeys.slice(0, MAX_ESTIMATE_ITEMS);
+    const overflowKeys = missKeys.slice(MAX_ESTIMATE_ITEMS);
+
+    let geminiCalls = 0;
+
+    if (batchKeys.length > 0) {
+      const mod = await getExtractModule();
+      if (!mod) {
+        return res.status(503).json({
+          error: 'Extraction service is not configured on this server.',
+          code: 'EXTRACT_UNAVAILABLE',
+        });
+      }
+
+      // Cap the name before it reaches the prompt — an unbounded name (a
+      // pasted paragraph, say) would otherwise inflate every batched prompt
+      // by however long that one string is, on a metered API.
+      const MAX_PRICE_NAME_LEN = 80;
+      const cappedName = (n) => String(n ?? '').trim().slice(0, MAX_PRICE_NAME_LEN);
+
+      const entries = batchKeys.map((key, idx) => {
+        const rep = missRowsByKey.get(key).rows[0];
+        return { i: idx, name: cappedName(rep.name), qty: String(rep.qty ?? '').trim() };
+      });
+
+      let priceMap;
+      try {
+        priceMap = await mod.estimatePrices(entries, store, zip);
+        geminiCalls = 1;
+      } catch (err) {
+        if (err.code && err.userMessage) {
+          console.warn(`[shopping-list/estimate] ${err.code}: ${err.message}`);
+          return res.status(extractCodeToStatus(err.code)).json({
+            error: err.userMessage,
+            code: err.code,
+          });
+        }
+        console.error('[shopping-list/estimate] Unexpected error:', err);
+        return res.status(500).json({ error: 'An unexpected error occurred.' });
+      }
+
+      // Unique key is (store, zip, name_key, qty_key) — qty_key is the
+      // REQUESTED qty verbatim ('' allowed); qty_priced is the model's
+      // assumed/echoed qty and is display-only provenance, never part of
+      // the key or the lookup. Conflating the two was the blank-qty caching
+      // bug (see the lookupStmt comment above). A qty edit still inserts a
+      // fresh (name, new qty_key) row alongside the old one rather than
+      // overwriting it in place — same accepted tradeoff as before.
+      // `source` is hardcoded to 'ai' here (never 'manual') — this is the
+      // Gemini-write path. It overwrites a prior 'manual' row on conflict,
+      // which is exactly the "estimate overwrites manual" behavior.
+      const upsertStmt = db.prepare(`
+        INSERT INTO price_book (id, store, zip, name_key, name, qty_key, qty_priced, unit_price, currency, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'ai', ?)
+        ON CONFLICT(store, zip, name_key, qty_key) DO UPDATE SET
+          name = excluded.name,
+          qty_priced = excluded.qty_priced,
+          unit_price = excluded.unit_price,
+          currency = excluded.currency,
+          source = excluded.source,
+          updated_at = excluded.updated_at
+      `);
+
+      const nowIso = new Date().toISOString();
+      batchKeys.forEach((key, idx) => {
+        const group = missRowsByKey.get(key);
+        const rep = group.rows[0];
+        const result = priceMap.get(idx);
+        const qtyKey = String(rep.qty ?? '').trim();
+
+        if (result && result.price !== null && result.price !== undefined) {
+          const qtyPriced = result.qty || qtyKey;
+          upsertStmt.run(
+            randomUUID(), normStore, normZip, group.nameKey, cappedName(rep.name), qtyKey, qtyPriced, result.price, nowIso
+          );
+          for (const r of group.rows) {
+            resolved.set(r.id, { price: result.price, qty_priced: qtyPriced, cached: false, updated_at: nowIso, source: 'ai' });
+          }
+        } else {
+          // Nothing usable — do not write to the book, so the next press retries it.
+          for (const r of group.rows) {
+            resolved.set(r.id, { price: null, qty_priced: null, cached: false, updated_at: null, source: null });
+          }
+        }
+      });
+    }
+
+    // Overflow beyond MAX_ESTIMATE_ITEMS: unpriced this press, retried next time.
+    for (const key of overflowKeys) {
+      for (const r of missRowsByKey.get(key).rows) {
+        resolved.set(r.id, { price: null, qty_priced: null, cached: false, updated_at: null, source: null });
+      }
+    }
+
+    // Assemble response items in list order; recompute totals server-side as
+    // reference values (the client always recomputes the displayed number).
+    let total = 0;
+    let totalUnchecked = 0;
+    let pricedCount = 0;
+    let unpricedCount = 0;
+
+    const items = rows.map((row) => {
+      const r = resolved.get(row.id) ?? { price: null, qty_priced: null, cached: false, updated_at: null, source: null };
+      const checked = row.checked === 1;
+      if (typeof r.price === 'number') {
+        pricedCount += 1;
+        total += r.price;
+        if (!checked) totalUnchecked += r.price;
+      } else {
+        unpricedCount += 1;
+      }
+      return {
+        id: row.id,
+        name: row.name,
+        qty: row.qty ?? '',
+        qty_priced: r.qty_priced ?? null,
+        checked,
+        price: r.price,
+        cached: r.cached,
+        source: r.source ?? null,
+        updated_at: r.updated_at,
+      };
+    });
+
+    res.json({
+      store, zip, currency: 'USD',
+      items,
+      total: Math.round(total * 100) / 100,
+      total_unchecked: Math.round(totalUnchecked * 100) / 100,
+      priced_count: pricedCount,
+      unpriced_count: unpricedCount,
+      estimated_at: estimatedAt,
+      gemini_calls: geminiCalls,
+    });
+  } catch (err) {
+    // Anything unexpected (e.g. a SQLite constraint failure) must not reach
+    // here as an unhandled rejection — Express 4 does not forward an async
+    // handler's rejection to error middleware on its own, and Node exits on
+    // an unhandled rejection. Mirrors the house pattern at POST /api/extract.
+    if (err.code && err.userMessage) {
+      console.warn(`[shopping-list/estimate] ${err.code}: ${err.message}`);
+      if (!res.headersSent) {
+        res.status(extractCodeToStatus(err.code)).json({ error: err.userMessage, code: err.code });
+      }
+    } else {
+      console.error('[shopping-list/estimate] Unexpected error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'An unexpected error occurred.' });
+      }
+    }
+  } finally {
+    estimateInFlight = false;
+  }
+});
+
 // ===========================================================================
 // History
 // ===========================================================================

@@ -25,6 +25,10 @@
     <string>/Users/carsongranese/.nvm/versions/node/v20.20.0/bin:/opt/homebrew/bin:/Users/carsongranese/.homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>NODE_ENV</key>
     <string>production</string>
+    <!-- Tells vite.config.js to skip emptyOutDir, so a rebuild never leaves
+         :3001 without an index.html to serve. -->
+    <key>COOKBOOK_WATCH_BUILD</key>
+    <string>1</string>
   </dict>
 
   <!-- Start at login and restart if it ever crashes = "always on". -->

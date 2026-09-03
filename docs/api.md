@@ -528,9 +528,13 @@ A flat ordered list of items. Positions are assigned automatically (append order
   "name":     "string",
   "qty":      "1 cup",
   "checked":  false,
-  "position": 0
+  "position": 0,
+  "category": "Pantry staples"
 }
 ```
+
+`category` is one of the fixed Pantry category set (§7) — coerced/guessed on
+create, editable via `PATCH`.
 
 ---
 
@@ -576,12 +580,25 @@ Manual-add duplicates are allowed; only this endpoint de-dupes.
 ```json
 {
   "added":   [{ ...item }, ...],
+  "merged":  1,
   "skipped": 1
 }
 ```
 
 `added` — array of newly created items.
-`skipped` — count of ingredients that were already present by name (not added).
+`merged` — count of ingredients that matched an existing item by name and had
+their required amount accumulated onto it instead of creating a new row (see
+"Accumulation" below).
+`skipped` — retained for backward-compatible clients; currently always equal
+to `merged`.
+
+**Accumulation.** When an ingredient's name matches an item already on the
+list (case-insensitive), the recipe's required amount is accumulated onto
+that item's hidden internal tracking rather than creating a duplicate row.
+The visible `qty` (buy amount) is bumped upward for "bumpable" units when the
+accumulated total now needs more, and never decreases. Only same-dimension
+amounts (e.g. both weights, both volumes) combine; a mismatched dimension is
+ignored for accumulation purposes but the item is still counted as `merged`.
 
 **Response 404** — `{ "error": "Recipe not found" }`
 
@@ -634,6 +651,367 @@ Remove all checked items.
 ```
 
 `deleted` — the number of items removed.
+
+---
+
+### Price estimation
+
+Price estimation is an **AI estimate from Gemini**, never a real quote or a
+live store price. It requires a persisted store choice, and results are
+cached server-side in a `price_book` table (30-day staleness) so repeat
+presses on an unchanged list cost zero Gemini calls.
+
+#### `GET /api/shopping-list/store`
+
+Return the persisted store choice plus the curated chain list the picker
+renders. Never errors, even on an empty `settings` table.
+
+**Response 200**
+```json
+{
+  "store":  "Trader Joe's",
+  "zip":    "02139",
+  "stores": ["Aldi", "Costco", "Food Lion", "Giant", "H-E-B", "Hannaford",
+             "Harris Teeter", "Kroger", "Market Basket", "Meijer", "Publix",
+             "Safeway", "Sam's Club", "ShopRite", "Sprouts", "Stop & Shop",
+             "Target", "Trader Joe's", "Walmart", "Wegmans",
+             "Whole Foods Market"]
+}
+```
+
+`store` and `zip` are `""` when unset. `stores` is the fixed curated list —
+it is **server-side only** and is not duplicated in `client/` source; the
+picker should also offer a free-text "Other…" entry for any store not on
+this list.
+
+---
+
+#### `PUT /api/shopping-list/store`
+
+Set the store and/or ZIP. Persists to a `settings(key, value)` table under
+keys `shopping.store` / `shopping.zip`.
+
+**Request body:**
+```json
+{
+  "store": "Trader Joe's",
+  "zip":   "02139"
+}
+```
+
+- `store` — required, non-empty after trimming, ≤ 60 characters, no control
+  characters or newlines. May be any string — either one of `stores` above
+  or a custom "Other…" value.
+- `zip` — optional. When the key is present, `""` clears the stored ZIP and
+  any other value must be exactly 5 digits. When the key is omitted
+  entirely, the previously stored ZIP is left unchanged.
+
+**Response 200** — same shape as `GET /api/shopping-list/store`, reflecting
+the values just saved.
+
+**Response 400**
+```json
+{ "error": "Pick a store." }
+```
+or
+```json
+{ "error": "ZIP must be 5 digits." }
+```
+Neither error changes the stored value.
+
+---
+
+#### `GET /api/shopping-list/prices`
+
+Hydrate cached prices for **every** item currently on the shopping list, with
+**no Gemini call, ever** — a plain read of `price_book`. This exists so a
+price, once estimated, stays next to its ingredient across a reload instead
+of disappearing (see `docs/decisions.md`, "2026-09-02 — Prices persist per
+item, not per estimate"). It is a separate route rather than a `cachedOnly`
+flag on `POST /estimate` specifically so the read path is structurally
+incapable of spending quota — it never imports or calls the pricing module.
+
+No request body. No `estimateInFlight` guard — a concurrent `POST /estimate`
+does not block or get blocked by this route, and this route never writes to
+`price_book`.
+
+**Response 200**
+```json
+{
+  "store": "Trader Joe's",
+  "zip":   "02139",
+  "items": [
+    {
+      "id":         "4dc5e6fb-…",
+      "name":       "Bananas",
+      "qty":        "6",
+      "checked":    false,
+      "qty_priced": "6",
+      "price":      1.38,
+      "source":     "ai",
+      "updated_at": "2026-09-03T02:21:58.585Z"
+    },
+    {
+      "id":         "2ab7-…",
+      "name":       "Saffron threads",
+      "qty":        "1 pack",
+      "checked":    true,
+      "qty_priced": null,
+      "price":      null,
+      "source":     null,
+      "updated_at": null
+    }
+  ],
+  "total":            1.38,
+  "total_unchecked":  1.38,
+  "priced_count":     1,
+  "unpriced_count":   1
+}
+```
+
+Same field meanings as `POST /api/shopping-list/estimate`'s response
+(`items[].id` maps back to the row **by id, never by name**; `price` is USD
+rounded to 2 decimals or `null`; `total` / `total_unchecked` are reference
+sums the client is free to recompute from live checked state) — this
+response is that same shape **minus `gemini_calls`** (nothing was ever
+computed) and minus the per-item `cached` flag (meaningless here — nothing
+was freshly priced this request, so every non-null price is definitionally
+from the cache). An item with no cached entry comes back `price: null`,
+`source: null`, and counts toward `unpriced_count`, exactly like an unpriced
+item from the estimate endpoint.
+
+`items[].source` is `"ai"` when the price came from a Gemini estimate,
+`"manual"` when the user typed it in via `PUT /api/shopping-list/:id/price`,
+or `null` when the item is unpriced. The client uses this to mark manual
+prices visually, because the total block's "AI estimate — not a real price"
+disclaimer is false for a number the user typed themselves.
+
+**The 30-day staleness window that `POST /estimate` enforces does NOT apply
+here — this is deliberate, not an oversight.** `POST /estimate` treats an
+entry older than 30 days as a miss and re-prices it; `GET /prices` returns it
+regardless of age. Reading means "show me everything you have" (a price must
+never silently vanish from the screen, which was the literal user complaint
+this endpoint fixes); pressing Estimate means "fill gaps and refresh anything
+stale." Both routes read the identical `(store, zip, name_key, qty_key)` key
+in the identical `price_book` table — they are intentionally allowed to give
+different answers from the same data. Do not "fix" this asymmetry to make the
+two routes agree; that would reintroduce the reload bug.
+
+**No store set** — unlike `POST /estimate`'s `400 NO_STORE`, this returns
+**200** with `store: ""`, `zip: ""`, and every item `price: null`. A fresh
+read of an unconfigured app is a normal empty state, not an error.
+
+An empty shopping list returns **200** with `items: []`, `total: 0`,
+`total_unchecked: 0`, `priced_count: 0`, `unpriced_count: 0`.
+
+---
+
+#### `POST /api/shopping-list/estimate`
+
+Price every item currently on the shopping list — **checked and unchecked
+alike; `checked` state is never a filter and is never sent to Gemini.**
+Mutating (writes the price book cache), so `POST`.
+
+**Request body** (all fields optional):
+```json
+{ "refresh": false }
+```
+`refresh: true` ignores cached entries and re-prices every item on this list,
+regardless of cache freshness.
+
+**Response 200**
+```json
+{
+  "store":           "Trader Joe's",
+  "zip":              "02139",
+  "currency":         "USD",
+  "items": [
+    {
+      "id":         "4dc5e6fb-…",
+      "name":       "Bananas",
+      "qty":        "6",
+      "qty_priced": "6",
+      "checked":    false,
+      "price":      1.38,
+      "cached":     true,
+      "source":     "ai",
+      "updated_at": "2026-09-03T02:21:58.585Z"
+    }
+  ],
+  "total":            19.35,
+  "total_unchecked":  19.35,
+  "priced_count":     4,
+  "unpriced_count":   0,
+  "estimated_at":     "2026-09-03T02:22:02.841Z",
+  "gemini_calls":     0
+}
+```
+
+Field notes:
+- `items` — one entry per row currently on `shopping_list`, in list order,
+  regardless of `checked`.
+- `items[].id` — the `shopping_list` row id. The client must map prices back
+  to rows **by id, never by name** (two rows can share a name).
+- `items[].checked` — that row's `checked` value as of request time; the
+  client should still prefer its own live state for display.
+- `items[].qty` — the row's own quantity, unchanged.
+- `items[].qty_priced` — what Gemini actually priced (its assumption when
+  `qty` was blank, otherwise an echo of `qty`); `null` when the item is
+  unpriced.
+- `items[].price` — USD, a plain number rounded to 2 decimals, or `null`
+  when the item could not be priced.
+- `items[].cached` — `true` when the price came from `price_book` with no
+  Gemini call this press.
+- `items[].source` — `"ai"` for a price this endpoint just wrote or already
+  had cached from Gemini, `null` when the item is unpriced. **Never
+  `"manual"` in this response** — see "Manual prices" below: a manual price
+  is always re-priced by this endpoint, so any row this endpoint returns
+  with a non-null `price` is, by construction, `"ai"`.
+- `total` — sum of all non-null `price` values (a reference figure; the
+  client recomputes the number it displays from its own checked state).
+- `total_unchecked` — the same sum restricted to rows that were unchecked at
+  request time.
+- `priced_count` / `unpriced_count` — count all rows, not just unchecked
+  ones; `priced_count + unpriced_count` always equals `items.length`.
+- `gemini_calls` — how many Gemini requests this press made. `0` on a fully
+  cached press — the key acceptance property of this endpoint.
+
+**Manual prices are always overwritten, literally.** A `price_book` row with
+`source: "manual"` (set via `PUT /api/shopping-list/:id/price`) is treated as
+a cache **miss on every press, regardless of its age** — it is never treated
+as a hit just because it's recent. It joins the normal batch of misses, gets
+a real Gemini call like any other missing item, and the row is overwritten
+with `source: "ai"`. This is a deliberate, user-chosen tradeoff: "estimate
+should overwrite manual," accepted with the cost stated plainly — every press
+spends one Gemini call per manually-priced item still on the list. See
+`docs/decisions.md`, "2026-09-03 — Manual prices."
+
+An empty shopping list returns **200** with `items: []`, `total: 0`,
+`total_unchecked: 0`, `gemini_calls: 0` — not an error.
+
+**Errors**
+
+| Status | code | When |
+|---|---|---|
+| 400 | `NO_STORE` | `shopping.store` is unset — pick a store first |
+| 409 | `ESTIMATE_IN_PROGRESS` | another estimate request is already running |
+| 503 | `EXTRACT_UNAVAILABLE` | the extraction module failed to load |
+| 503 | `CONFIG` | `GEMINI_API_KEY` missing / SDK not installed |
+| 429 | `RATE_LIMITED` | every model in the fallback chain is rate-limited |
+| 504 | `TIMEOUT` | exceeded `GEMINI_TIMEOUT_MS` |
+| 422 | `PARSE_FAILED` | unparseable JSON after the one retry |
+| 502 | `FETCH_FAILED` | the Gemini call failed for another reason |
+| 500 | — | anything unexpected |
+
+Error body is the house shape: `{ "error": "...", "code": "..." }`.
+
+**Caching.** Prices are cached in `price_book`, keyed by
+`(normalizeStore(store), normalizeZip(zip), normalizeName(item.name), item.qty)`
+— the row's own current `qty` (trimmed) is part of the cache key, not just
+compared after the fact. A cached entry is used only when it exists, is
+under 30 days old, and the request did not set `refresh: true` — anything
+else is a cache miss. Cache misses are de-duplicated by normalized name
+**and** qty before being sent to Gemini in a **single request** (capped at
+60 distinct missing name+qty pairs per press — the remainder come back
+unpriced and are retried on the next press), so two list rows named "Milk"
+with the **same** qty cost one Gemini prompt entry but both still receive a
+price and both count toward the total. Two rows named "Milk" with
+**different** qtys ("1 gal" vs "2 gal") each get their own prompt entry and
+their own cache line — they do not share a cached price and do not fight
+over the same cache row (an earlier name-only cache key caused exactly that:
+whichever qty was priced last silently overwrote the other's price, forcing
+a real Gemini call on every single press for the loser).
+
+Every returned price is validated before it is trusted or cached: it must be
+a real finite number strictly greater than 0 and no more than 999. `null`,
+`undefined`, booleans, arrays/objects, empty strings, non-numeric strings,
+and exactly `0` are all treated as **unpriced** — none of them are ever
+written to `price_book` as a real price (a naive numeric coercion would
+otherwise turn "the model couldn't price this" into a cached $0.00 for 30
+days, which is why the check happens before any arithmetic on the raw
+value).
+
+**Why blank-`qty` items cache correctly.** Internally, `price_book` stores
+the requested qty and the model's assumed qty in two separate columns:
+`qty_key` (the row's own qty, verbatim — `''` is valid and common for a
+manually-added item) is the actual cache key, while `qty_priced` — the qty
+Gemini says it assumed/priced — is display-only provenance and never
+participates in the lookup. Earlier revisions conflated the two into one
+column, which meant a blank-qty item's cache row was stored under whatever
+the model assumed ("1 each") but could never be found again by its own blank
+qty — it re-priced on every single press, forever. See `docs/data-shapes.md`
+§4b for the full column reference and the index migration history.
+
+---
+
+#### `PUT /api/shopping-list/:id/price`
+
+Set or clear a **manual** price for one shopping-list item — the ability to
+type a price in yourself, before or after ever pressing Estimate. A manual
+price is stored exactly like an AI price: a `price_book` row for that item's
+current `(store, zip, name_key, qty_key)` key, with a `source` column set to
+`"manual"` instead of `"ai"`. There is no separate table and no column added
+to `shopping_list` — this is deliberate (see `docs/decisions.md`, "2026-09-03
+— Manual prices"), so a manual price hydrates via `GET /prices`, contributes
+to totals, survives a reload, and clears when the item's `qty` changes or the
+store/ZIP changes, through the exact same paths an AI price already does.
+
+**Request body:**
+```json
+{ "price": 4.50 }
+```
+or, to clear a manual price and return the item to unpriced:
+```json
+{ "price": null }
+```
+
+- `price` is **required** in the body (its absence is a 400, not treated as
+  `null`).
+- A numeric `price` upserts a `price_book` row for this item's current
+  `name`/`qty` with `source: "manual"`, `qty_priced` set to the item's own
+  `qty` (there is no model assumption to record), and `updated_at` set to
+  now. If a row already existed for that key — `"ai"` or `"manual"` — it is
+  overwritten.
+- `price: null` **deletes** the `price_book` row for this item's current key
+  (whatever its `source`), so the item goes back to unpriced. This is how the
+  UI undoes a manual entry — e.g. tapping a manually-set price and clearing
+  it.
+- Validated with the same `coercePrice` function `POST /estimate` trusts
+  before writing to `price_book` (real finite number, not negative, not over
+  the 999 sanity cap; `null`/`undefined`/booleans/objects/non-numeric strings
+  all rejected) — **with one deliberate difference**: exactly `0` is rejected
+  on the AI path (it can only mean "the model failed to price this"), but is
+  **allowed** here. A human typing `0` is a real, meaningful signal — the
+  item is free, already owned, or otherwise not being paid for — not a
+  parsing failure, so it is stored as a genuine $0.00 price (counts toward
+  `priced_count`, contributes $0 to the total) rather than being treated as
+  unpriced.
+
+**Response 200** — **the same shape as `GET /api/shopping-list/prices`** (the
+whole list's prices and totals, including the just-changed item), not a
+single-item patch. The client is expected to replace its price state
+wholesale from this response rather than patch one entry in place.
+
+**Errors**
+
+| Status | code | When |
+|---|---|---|
+| 404 | — | `:id` is not a `shopping_list` row |
+| 400 | `NO_STORE` | `shopping.store` is unset — prices are keyed per store+ZIP, so there is nowhere to put one. The client responds exactly as it does for `POST /estimate` in this state: open the store picker instead of showing an error. |
+| 400 | — | `price` key missing from the body, or fails `coercePrice` validation (`{ "error": "Enter a valid price." }`) |
+| 503 | `EXTRACT_UNAVAILABLE` | the extraction module (which owns `coercePrice`) failed to load — only reachable when setting a non-null price; clearing never needs it |
+
+Error body is the house shape: `{ "error": "...", "code": "..." }` (the
+validation-failure 400 omits `code`, matching the store-validation errors in
+`PUT /api/shopping-list/store`).
+
+**The headline behavior — a manual price does not survive a re-estimate.**
+`POST /api/shopping-list/estimate` treats any `price_book` row with
+`source: "manual"` as an unconditional cache miss (see that endpoint's docs
+above): the very next press re-prices it with Gemini and flips it back to
+`source: "ai"`. Setting a manual price never blocks or defers a future
+estimate — it only fills the gap, or corrects the number, until the next
+press.
 
 ---
 

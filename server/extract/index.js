@@ -26,6 +26,11 @@
  *     persisted). Sends the image inline rather than via the Files API.
  *     The caller owns the temp file's lifecycle.
  *
+ *   estimatePrices(entries, store, zip)
+ *     A batch of shopping-list items in, an AI-estimated USD price per item
+ *     out (not persisted — the caller owns the price_book cache). Text-only,
+ *     no video/image input.
+ *
  * Both functions resolve to a DraftRecipe on success, or throw an ExtractError
  * on failure. The ExtractError carries:
  *   err.code        ∈ { UNSUPPORTED_URL, FETCH_FAILED, NO_RECIPE, PARSE_FAILED, TIMEOUT, CONFIG }
@@ -46,6 +51,7 @@ import { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.j
 export { ExtractError, CODES }                                   from './errors.js';
 export { assignFilters }                                         from './gemini.js';
 export { extractReceipt }                                        from './receipt.js';
+export { estimatePrices, coercePrice }                            from './price.js';
 export { extractCandidateFrames, getCandidateFramesFromUrl }     from './frame.js';
 
 // ---------------------------------------------------------------------------

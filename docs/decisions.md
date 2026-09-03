@@ -282,3 +282,156 @@ settings store anywhere in the repo — so these are fresh calls, not inferences
   AI-generated.
 - **Out of scope, deliberately:** no currency other than USD, no price history/tracking over time,
   no per-store comparison, and no attempt to fix the pre-existing `req_base`/`req_dim` desync.
+
+### Follow-up calls (same day, after reviewing the spec)
+- **Checked items: a toggle, not a fixed rule.** The user asked for "an option where I can discount
+  checked stuff." So the server prices **every** item regardless of checked state, and a control on
+  the Shopping List decides whether checked items count toward the **total**. Because every row is
+  already priced, the toggle is pure client-side arithmetic — flipping it costs zero Gemini calls
+  and never triggers a re-estimate. The control only appears when at least one item is checked;
+  default is **exclude checked** (the total answers "what will this shop cost").
+- **Store list: the generic 21-chain set plus a free-text "Other…"**, confirmed by the user rather
+  than narrowed to their actual stores. Trimming it later is a one-line edit to the server list.
+- **`ShoppingFormModal` is fixed first, as a separate change.** `ShoppingList.jsx:348` renders a
+  component that is never imported and does not exist anywhere in the repo; pressing "+ Add item"
+  throws `ReferenceError` and, with no error boundary, unmounts the whole screen. Confirmed live in
+  the running app, not just by grep. It predates this feature and is in the uncommitted working
+  tree. It lands before the price work because it shares `ShoppingList.jsx` (so parallel edits would
+  collide) and because QA cannot build a list by hand to test estimation against while it is broken.
+
+### QA gate findings — resolutions (2026-09-02)
+`qa-agent` returned NO-GO. Two of its findings needed a call from me rather than a mechanical fix:
+
+- **Same name, different qty now keys the price book separately.** QA found that two rows named
+  "Milk" with qty `1 gal` and `2 gal` oscillate forever: grouping is by name only, so each press
+  re-prices whichever variant lost the last round — a permanent one-Gemini-call-per-press drip that
+  silently defeats the whole point of the cache, plus a row that briefly displayed `2 gal` while
+  carrying the price of `1 gal`. **Fix:** group by `name_key + qty`, and widen the unique index to
+  `(store, zip, name_key, qty_priced)`. Identical duplicates still collapse to one prompt entry, so
+  AC-24 is preserved. The tradeoff, accepted: a qty edit now leaves the old row behind instead of
+  overwriting it in place, so the book grows slightly until the 30-day expiry sweeps it. Rows are
+  tiny and single-user; an unbounded quota drip is the worse failure.
+- **AC-15 was ambiguous and is corrected in the spec.** It said the total equals the sum of the
+  *visible* prices, which contradicts §6.3 state 4 ("sum rows still on the list"). With a search term
+  or a category chip off, hidden priced rows still count. §6.3 is the governing rule — **the total is
+  a list total, not a view total** — and AC-15 now says so, so a future reader doesn't "fix" the
+  client into matching the looser wording.
+
+## 2026-09-02 — Correcting the always-on build watcher (it was serving 500s)
+The `com.cookbook.build` watcher added earlier today had a real defect, found when the backend
+agent noticed `ENOENT: client/dist/index.html` in `server/cookbook.log`.
+
+- **What was wrong:** `vite build --watch` defaults to `emptyOutDir: true`, so every rebuild
+  **deleted `client/dist` before rewriting it**. During that window the always-on server on :3001 —
+  which is the *phone's* URL over Tailscale — had no `index.html` and its SPA fallback route threw.
+  Measured: **46 consecutive 500s** while polling `http://localhost:3001/` through one rebuild.
+- **The earlier entry understated this.** It said a page load landing mid-rebuild "can miss a hashed
+  asset for a moment" and judged an atomic-swap build directory not worth it. That was wrong: the
+  app shell itself disappeared, not just an asset, and during active editing the window is hit
+  constantly. Corrected here rather than edited above, so the mistake stays visible.
+- **Fix:** `build.emptyOutDir: !process.env.COOKBOOK_WATCH_BUILD` in `client/vite.config.js`, with
+  `COOKBOOK_WATCH_BUILD=1` set in the LaunchAgent. Watch-mode rebuilds now overwrite in place and
+  never leave the directory without an `index.html`; a plain `npm run build` still does a clean
+  build. Re-measured: **0 non-200s across 80 polls** spanning a full rebuild. The cost is that
+  superseded hashed assets accumulate in `dist/` until the next clean build — harmless, gitignored,
+  and far cheaper than serving errors to the phone.
+- **Gotcha worth remembering:** `launchctl kickstart -k` restarts a job using the **already-loaded**
+  plist, so it does NOT pick up plist edits (new env vars included). The first fix attempt appeared
+  to fail for exactly this reason — the env var never reached the process. Plist changes need
+  `launchctl unload` + `load`; `kickstart -k` is only enough for code changes.
+
+### Post-GO follow-ups (2026-09-02)
+`qa-agent` returned GO with three non-blocking items. Resolutions:
+
+- **A blank-qty item must still cache — the cache key is the *requested* qty, not the priced one.**
+  QA found a row with an empty `qty` costs a Gemini call on *every* press, forever: the book stores
+  `qty_priced` = the model's *assumed* qty ("1 each"), but the lookup compares that column against
+  the row's own qty (`""`), so it can never match. Pre-existing, not caused by the index widening.
+  It is really a spec conflict: §5.2's hit rule and §7 mandate the miss, while AC-17 — "second press
+  costs zero Gemini calls", the feature's headline promise — forbids it. **The code wins**: split the
+  two concepts. `qty_key` (the row's requested qty, verbatim, `''` allowed) becomes part of the
+  unique key; `qty_priced` stays as display-only provenance ("Priced as 1 loaf"). Conflating them
+  was the actual mistake. Amending AC-17 instead was rejected — "pressing it twice is free" is the
+  reason the cache exists, and "+ Add item" leaves qty optional, so blank-qty rows are easy to hit.
+- **The `emptyOutDir` fix traded one bug for a smaller one; both get fixed, not one or the other.**
+  With `emptyOutDir: false`, Workbox globs the output dir and precaches every superseded bundle, so
+  the PWA manifest grows ~330 KB per content-changing rebuild without bound — and the phone
+  re-downloads that dead weight over Tailscale on each service-worker update. Keep
+  `emptyOutDir: false` (the app shell must never vanish from :3001) **and** prune orphaned files in
+  `dist/assets` after each bundle write. Rejected "just revert to `emptyOutDir: true`": that brings
+  back 46 consecutive 500s on the phone's URL, which is far worse than a bloated precache.
+- **AC-19 and §3.2/§5.2 of the spec are now false and get amended.** They still describe the price
+  book as upserting onto one key and "replacing rather than duplicating" on a qty edit. The shipped
+  behavior is the opposite by design — it is *why* the oscillation fix works. Docs (`docs/api.md`,
+  `docs/data-shapes.md`) were already updated; the spec was not, and the spec is what the next
+  fresh-context agent reads.
+
+## 2026-09-02 — Settings, reached from "My Kitchen"
+- **"My Kitchen" in the sidebar footer becomes a button that opens a Settings modal.** It was a
+  plain non-interactive `<div>` (`AppShell.jsx:118-124`). Chosen over a popover menu (an extra click
+  for one destination) and over a `/settings` route (a whole page for two fields today).
+- **Contents: grocery store + ZIP only**, deliberately. It is the one real app-level setting that
+  exists; the modal is built so more can be added without rework.
+- **The store form gets extracted into ONE shared component.** `StorePickerModal` currently lives
+  inline in `ShoppingList.jsx`, and Settings needs the same fields. Copying it would create a second
+  source of truth for the chain list, the ZIP validation, and the "Other…" free-text path — the same
+  drift hazard `PANTRY_CATEGORIES` already has in two places. The Shopping List keeps its own store
+  shortcut (it is contextual there, right next to Estimate cost); both entry points render the same
+  component and hit the same `GET`/`PUT /api/shopping-list/store`.
+- **Phone reaches Settings via a gear in the header**, not a sixth bottom tab (`docs/decisions.md`
+  already flags the tab count as a pressure point) and not desktop-only (the phone is the device
+  actually used for shopping, so the store must be editable there). **Known collision to solve:**
+  there is no global phone header — each screen renders its own `library-header`, and several
+  already put a button at the top-right on phone (Shopping List's "+ Add", Library's "+ New recipe").
+  The gear must not sit on top of those.
+
+## 2026-09-02 — Prices persist per item, not per estimate
+User: "If I hit estimate cost I want the value to stay next to that ingredient forever (at least
+while it remains in shopping list)." This is a **model change**, not a display tweak.
+
+- **Before:** an estimate was a *snapshot of the whole list*, held in React state and gone on
+  reload (spec §8.5 made that an explicit assumption). **Now:** a price is a *property of an item*,
+  keyed as it already is by `(store, zip, name_key, qty_key)` in `price_book`, and rendered whenever
+  the book has one. Nothing new is persisted — the prices were already server-side for 30 days;
+  the client simply never asked for them again.
+- **New `GET /api/shopping-list/prices`** hydrates from the cache and **never calls Gemini**. A
+  separate read endpoint rather than a `cachedOnly` flag on `POST /estimate`, so the read path
+  cannot spend quota even by accident.
+- **Hydration deliberately ignores the 30-day age; the estimate path still honors it.** Reading is
+  "show me everything you have" (a price must never silently vanish — that was the whole request);
+  pressing Estimate is "fill the gaps and refresh anything stale". The two paths want different
+  answers from the same table, so the age check belongs in the estimate path only.
+- **The "List changed —" staleness model largely dissolves.** Adding an item no longer dims
+  everyone else's price — the user explicitly chose "keep existing prices solid", and it was always
+  a bit false: adding bread does not make the milk price less true. Unpriced items simply show no
+  price, and `N of M items priced` carries that information. Renaming or re-quantifying an item
+  changes its cache key, so *that* item loses its price on its own, with no bookkeeping.
+- **A store or ZIP change needs no special handling** for the same reason: the key includes store
+  and zip, so prices for the old store are simply not found and the rows come back unpriced. The
+  self-consistency here is why the cache key was worth getting right earlier.
+- **AC-25/26 are NOT violated.** They forbid *auto-estimating*; the mount-time hydration is a read
+  that cannot reach Gemini. The property that matters — no Gemini call without a deliberate press —
+  is unchanged, and QA should verify it as "zero POST /estimate on load", not "zero requests".
+
+## 2026-09-03 — Manual prices, and why "estimate overwrites manual" is literal
+User: "I would also like the ability to change the price manually (before and after estimate).
+Estimate should overwrite manual."
+
+- **A manual price is a `price_book` row, not a new column on `shopping_list`.** Same
+  `(store, zip, name_key, qty_key)` key as an AI price, plus a new `source` column (`'ai'|'manual'`,
+  default `'ai'`). This means manual prices hydrate, total, persist across reloads, and clear on a
+  qty/store change through the code paths that already exist — no parallel storage, no join, and no
+  repeat of the `req_base`/`req_dim` desync that came from hanging derived values off the list row.
+- **Overwrite is literal: a `source: 'manual'` row is always a MISS on `POST /estimate`**, so a
+  press re-prices it and flips it back to `'ai'`. The user chose this over "manual wins until stale"
+  with the cost stated plainly: **every press spends a Gemini call per manually-priced item**. That
+  is the accepted trade, not an oversight. Loading the list still costs nothing.
+- **Manual prices are visually marked**, because the total block says "AI estimate — not a real
+  price" and that sentence is simply false for a number the user typed. The disclaimer has to stay
+  truthful once the list is mixed.
+- **A manual price requires a store to be set**, since prices are keyed per store+ZIP. With no store
+  there is nowhere to put it, so the API returns `NO_STORE` and the UI opens the store picker —
+  exactly what pressing Estimate already does in that state.
+- **Editing is tap-the-price inline**, not a per-row edit button (the 375px row already carries
+  name, qty, price and ×) and not an item sheet (slower for a quick fix). Tapping the `—` on an
+  unpriced item is how you price something *before* estimating.

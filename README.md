@@ -67,7 +67,13 @@ The dev server on :5173 is localhost-only, so the phone must use :3001.
   `npm run service:restart` / `service:stop` / `service:start` / `service:log`.
 - `com.cookbook.build` — `vite build --watch`, which rebuilds `client/dist` on every client
   source change so :3001 (and therefore the phone) always serves the latest UI. Managed the same
-  way from `client/`, logs to `client/build.log`.
+  way from `client/`, logs to `client/build.log`. It runs with `COOKBOOK_WATCH_BUILD=1`, which
+  turns off Vite's `emptyOutDir` so a rebuild never leaves :3001 without an `index.html`.
+
+> **Restarting:** `npm run service:restart` (`launchctl kickstart -k`) picks up **code** changes
+> only. Editing a `.plist` — adding an env var, changing arguments — needs
+> `launchctl unload ~/Library/LaunchAgents/<label>.plist && launchctl load ~/Library/LaunchAgents/<label>.plist`,
+> because `kickstart` restarts the job from the already-loaded definition.
 
 Server-side edits are the one exception: `com.cookbook.server` runs plain `node index.js`, so
 after changing anything in `server/` run `cd server && npm run service:restart`.

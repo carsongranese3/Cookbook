@@ -145,6 +145,259 @@ existing items. Manual adds allow duplicates.
 
 ---
 
+## 4a. Settings (generic key/value)
+
+Stored in a `settings` table, used by the shopping list's price estimation
+feature to persist the chosen store/ZIP so the Mac and the phone agree.
+
+| Field   | JS type  | SQLite column type       | Notes |
+|---------|----------|---------------------------|-------|
+| `key`   | `string` | `TEXT PRIMARY KEY`       | |
+| `value` | `string` | `TEXT NOT NULL DEFAULT ''` | |
+
+Keys currently in use:
+
+| key | value | default when absent |
+|---|---|---|
+| `shopping.store` | display name of the chosen chain, e.g. `Trader Joe's` | `''` |
+| `shopping.zip`   | 5-digit US ZIP, e.g. `02139` | `''` |
+
+## 4b. Price book (Gemini price cache)
+
+Stored in a `price_book` table. Backs `POST /api/shopping-list/estimate` so
+repeat presses on an unchanged list cost zero Gemini calls until an entry
+goes stale (30 days), the store/ZIP changes, or the item's `qty` changes.
+
+| Field        | JS type  | SQLite column type          | Notes |
+|--------------|----------|------------------------------|-------|
+| `id`         | `string` (UUID v4) | `TEXT PRIMARY KEY` | |
+| `store`      | `string` | `TEXT NOT NULL`             | Normalized store string — see `normalizeStore`. |
+| `zip`        | `string` | `TEXT NOT NULL DEFAULT ''`  | `''` when no ZIP — **never `NULL`** (a `NULL` zip would defeat the unique index, since SQLite treats `NULL`s as distinct within it). |
+| `name_key`   | `string` | `TEXT NOT NULL`             | Normalized item name — see `normalizeName`. |
+| `name`       | `string` | `TEXT NOT NULL`             | The item name as it was priced (display only). |
+| `qty_key`    | `string` | `TEXT NOT NULL DEFAULT ''`  | The shopping-list row's REQUESTED qty, verbatim — `''` is a valid, common value for a manually-added item with no qty. **This is the cache key**, looked up against the row's own current `qty`. |
+| `qty_priced` | `string` | `TEXT NOT NULL DEFAULT ''`  | The qty Gemini says it actually priced — its own assumption when `qty_key` was blank, otherwise an echo of `qty_key`. **Display-only provenance — never part of the key or the lookup.** |
+| `unit_price` | `number` | `REAL NOT NULL`             | USD price for buying `qty_key`/`qty_priced` of this item — **not** a per-unit rate; no arithmetic is ever done on quantities. |
+| `currency`   | `string` | `TEXT NOT NULL DEFAULT 'USD'` | USD only, currently. |
+| `source`     | `'ai'` \| `'manual'` | `TEXT NOT NULL DEFAULT 'ai'` | `'ai'` — priced by `POST /api/shopping-list/estimate`. `'manual'` — set by the user via `PUT /api/shopping-list/:id/price`. Added 2026-09-03; every pre-existing row backfills to `'ai'` (correct — manual prices did not exist before this column). |
+| `updated_at` | `string` (ISO 8601) | `TEXT NOT NULL`   | |
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS price_book_key
+  ON price_book (store, zip, name_key, qty_key);
+```
+
+`qty_key` and `qty_priced` are deliberately two different columns, and only
+`qty_key` is part of the unique index. They used to be conflated into one
+column (originally just `qty_priced`, doubling as both "what we asked to
+price" and "what the model said it priced"), which broke caching for any
+item added with a blank `qty` (the common "+ Add item" case): the cache row
+was written under the model's assumed qty ("1 each"), but the lookup always
+binds the row's OWN current qty (`""`) — `"" != "1 each"`, so the item
+missed the cache and re-priced on every single press, forever, permanently
+defeating "pressing it twice is free" for that item.
+
+The index has now widened twice:
+1. `(store, zip, name_key)` — original. Two rows sharing a name but priced
+   for different quantities ("Milk" 1 gal vs. 2 gal) collided on this key;
+   whichever qty was priced last silently overwrote the other's cached
+   price, so the loser re-priced (a real Gemini call) on every press.
+2. `(store, zip, name_key, qty_priced)` — fixed the oscillation above, but
+   introduced the blank-qty bug described above, since `qty_priced` (the
+   model's assumption) was doing double duty as the cache key.
+3. `(store, zip, name_key, qty_key)` — current. `qty_key` is the row's
+   requested qty verbatim, so a blank-qty row hits correctly (its key really
+   is `''`), and `1 gal`/`2 gal` remain distinct keys (the oscillation fix is
+   preserved).
+
+Boot-time migration (`server/db.js`) handles a DB in any of the three prior
+shapes: if the `qty_key` column is missing it's added (`ALTER TABLE ADD
+COLUMN`) and existing rows are backfilled once with `qty_key = qty_priced`
+(the best available approximation, since the original requested qty for a
+pre-existing row generally isn't recoverable — the old code effectively
+assumed the two were equal). This backfill runs **only** the one time the
+column is created, never on every boot, since running it unconditionally
+would stomp the correct blank `qty_key` on rows the fix itself produces
+going forward. A row that actually was blank-qty stays a stale one-time miss
+after migration — the very next press re-prices it and rewrites it with the
+correct `''` key, self-healing from then on. Separately, if the index still
+has either older shape (detected by the absence of `qty_key` in its SQL), it
+is dropped and recreated (`DROP INDEX IF EXISTS` + `CREATE UNIQUE INDEX IF
+NOT EXISTS`, idempotent like the rest of the file's migrations).
+
+Writes are upserts on the unique key (`INSERT ... ON CONFLICT(store, zip,
+name_key, qty_key) DO UPDATE` — `qty_priced` IS updated on conflict, since
+it's provenance rather than key). Rows are never deleted by this feature;
+switching the store or ZIP back to a previously-used value is a free cache
+hit. One consequence of the wider key: editing an item's `qty` still leaves
+the old `(name, old qty_key)` row behind rather than overwriting it in
+place — it simply ages out at the 30-day staleness window. Accepted
+tradeoff, same as the oscillation fix above.
+
+**Normalization helpers** (server-side, one definition each):
+```
+normalizeName(s)  = String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+normalizeStore(s) = String(s ?? '').trim().replace(/\s+/g, ' ')      // case preserved
+normalizeZip(s)   = String(s ?? '').trim()                          // '' or /^\d{5}$/
+```
+`normalizeName` is deliberately dumb: trim, lowercase, collapse internal
+whitespace. No stemming, no singularization, no synonym mapping — "Tomatoes"
+and "tomato" are different cache keys by design.
+
+**Manual prices (`source: 'manual'`) — same table, same key, one column.**
+A price the user types in via `PUT /api/shopping-list/:id/price` is stored as
+an ordinary `price_book` row at the item's current `(store, zip, name_key,
+qty_key)` key, with `source = 'manual'` and `qty_priced` set to the item's
+own `qty` (there is no model assumption to record). This is a deliberate
+design choice — see `docs/decisions.md` "2026-09-03 — Manual prices" — over
+adding a price column to `shopping_list`, specifically so a manual price
+rides the exact same hydration (`GET /prices`), totaling, reload-persistence,
+and qty/store-change-clears-it behavior an AI price already has, with no new
+code paths and no risk of the `req_base`/`req_dim` desync that hanging
+derived state off the `shopping_list` row caused elsewhere.
+
+**`POST /estimate` treats a `'manual'` row as an unconditional cache miss,
+regardless of `updated_at`.** This is the one place `source` changes the
+existing hit/miss logic (§5.2 of `specs/price-estimation.md`, which predates
+`source` and describes only the AI path): a hit additionally requires
+`source !== 'manual'`. A manual row therefore always joins the normal
+batch/grouping path on the very next press, gets a real Gemini call, and is
+overwritten with `source = 'ai'` — "estimate overwrites manual" is literal,
+not just first-hit-wins. Clearing a manual price (`{ "price": null }` on the
+same endpoint) simply `DELETE`s the row for that key, same as any other
+cache eviction.
+
+## 4c. Estimate response (transient — never persisted on `shopping_list`)
+
+Returned by `POST /api/shopping-list/estimate`. See `docs/api.md` §5 for the
+full field-by-field description; shape only, here:
+
+```json
+{
+  "store": "Trader Joe's",
+  "zip": "02139",
+  "currency": "USD",
+  "items": [
+    {
+      "id": "9f1c…",
+      "name": "whole milk",
+      "qty": "1 gal",
+      "qty_priced": "1 gal",
+      "checked": false,
+      "price": 4.29,
+      "cached": true,
+      "source": "ai",
+      "updated_at": "2026-08-14T11:02:44.101Z"
+    },
+    {
+      "id": "2ab7…",
+      "name": "saffron threads",
+      "qty": "1 pack",
+      "qty_priced": null,
+      "checked": true,
+      "price": null,
+      "cached": false,
+      "source": null,
+      "updated_at": null
+    }
+  ],
+  "total": 4.29,
+  "total_unchecked": 4.29,
+  "priced_count": 1,
+  "unpriced_count": 1,
+  "estimated_at": "2026-09-02T14:11:03.221Z",
+  "gemini_calls": 1
+}
+```
+
+`items` covers every row on the shopping list, checked and unchecked alike —
+the server never filters on `checked`; whether checked items count toward a
+displayed total is a client-side decision only.
+
+`items[].source` is always `"ai"` or `null` in this response — never
+`"manual"`. Any row that had a manual price is treated as a miss and
+re-priced this press (see §4b), so by the time this response is built, every
+non-null price it carries was just written (or already existed) as `"ai"`.
+
+---
+
+## 4d. Prices hydration response (read-only, never persisted, never a Gemini call)
+
+Returned by `GET /api/shopping-list/prices`. See `docs/api.md` §5 for the
+full field-by-field description. Same shape as §4c **minus `currency`,
+`estimated_at`, `gemini_calls`, and each item's `cached` flag** — nothing is
+computed by this request, so those fields don't apply:
+
+```json
+{
+  "store": "Trader Joe's",
+  "zip": "02139",
+  "items": [
+    {
+      "id": "9f1c…",
+      "name": "whole milk",
+      "qty": "1 gal",
+      "checked": false,
+      "qty_priced": "1 gal",
+      "price": 4.29,
+      "source": "ai",
+      "updated_at": "2026-08-14T11:02:44.101Z"
+    },
+    {
+      "id": "2ab7…",
+      "name": "saffron threads",
+      "qty": "1 pack",
+      "checked": true,
+      "qty_priced": null,
+      "price": null,
+      "source": null,
+      "updated_at": null
+    }
+  ],
+  "total": 4.29,
+  "total_unchecked": 4.29,
+  "priced_count": 1,
+  "unpriced_count": 1
+}
+```
+
+This is a plain `SELECT` against `price_book`, keyed by the same
+`(store, zip, name_key, qty_key)` as §4c, with `qty_key` bound to each row's
+**current** `qty`. It **deliberately ignores** the 30-day staleness window
+that `POST /estimate` enforces on the same table — see the note in
+`docs/api.md` §5 and `docs/decisions.md` ("2026-09-02 — Prices persist per
+item, not per estimate") for why the two routes must keep answering
+differently from the same cache. No store set returns **200** with every item
+`price: null`, not the `400 NO_STORE` that `POST /estimate` returns — a fresh
+read of an unconfigured app is a normal empty state.
+
+Here, unlike §4c, `items[].source` can legitimately be `"manual"` — this
+route hydrates whatever is in `price_book` as-is, with no re-pricing, so a
+manual price is returned exactly as stored until the next `POST /estimate`
+overwrites it.
+
+---
+
+## 4e. Manual price entry (`PUT /api/shopping-list/:id/price`)
+
+**Request body** — set:
+```json
+{ "price": 4.50 }
+```
+or clear:
+```json
+{ "price": null }
+```
+
+**Response** — identical shape to §4d (`GET /api/shopping-list/prices`): the
+whole list's prices and totals, reflecting the item that was just changed.
+There is no single-item response shape for this endpoint — the client is
+expected to replace its entire price snapshot from this response rather than
+patch one entry. See `docs/api.md` §5 for the full field list, validation
+rules, and error codes.
+
+---
+
 ## 5. Gemini return JSON contract
 
 The model is instructed to return **only** this JSON shape. The extraction

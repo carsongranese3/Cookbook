@@ -73,6 +73,33 @@ export const api = {
     remove: (id) => request(`/shopping-list/${id}`, { method: 'DELETE' }),
     clearChecked:  () => request('/shopping-list/clear-checked', { method: 'POST' }),
     moveToPantry:  () => request('/shopping-list/move-to-pantry', { method: 'POST' }),
+    // Price estimation: store choice is server-persisted (shared across devices).
+    // A price is a property of an item, not a snapshot of a press — see
+    // docs/decisions.md "2026-09-02 — Prices persist per item, not per estimate".
+    getStore: () => request('/shopping-list/store'),
+    setStore: (store, zip = '') =>
+      request('/shopping-list/store', {
+        method: 'PUT',
+        body: JSON.stringify({ store, zip }),
+      }),
+    // Read-only hydration from the price cache — never calls Gemini, ignores the
+    // 30-day staleness window (a price must never silently vanish on reload).
+    getPrices: () => request('/shopping-list/prices'),
+    // Mutating: fills in unpriced items and refreshes anything older than 30 days.
+    estimate: (refresh = false) =>
+      request('/shopping-list/estimate', {
+        method: 'POST',
+        body: JSON.stringify(refresh ? { refresh: true } : {}),
+      }),
+    // Manual price edit. { price: number } sets it; { price: null } clears it back
+    // to unpriced. Returns the same payload as getPrices() (docs: whole-list prices
+    // + totals) so callers should replace price state wholesale, not patch one row.
+    // 400 NO_STORE when no store is set — a price is keyed per store+ZIP.
+    setPrice: (id, price) =>
+      request(`/shopping-list/${id}/price`, {
+        method: 'PUT',
+        body: JSON.stringify({ price }),
+      }),
   },
 
   // Pantry
