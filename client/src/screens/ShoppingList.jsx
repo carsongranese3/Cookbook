@@ -315,6 +315,21 @@ export default function ShoppingList({ isOffline }) {
   const [movingToPantry, setMovingToPantry] = useState(false);
   const [copyMsg, setCopyMsg]           = useState('');
   const [copyFallback, setCopyFallback] = useState(null); // text, or null
+  // Send to Reminders and Copy for Reminders share one button, one state at a
+  // time (docs/decisions.md "2026-09-03 — Reminders becomes one toggling
+  // button"). 'copy' is the default/rest state; a successful copy flips it to
+  // 'send', and sending flips it right back. useState('copy') as the initial
+  // value is also what makes "leaving the page" reset it for free — this
+  // screen unmounts on tab change (see App.jsx), so there's nothing to persist.
+  const [reminderStage, setReminderStage] = useState('copy'); // 'copy' | 'send'
+
+  // The button must never offer to Send a clipboard that no longer matches the
+  // list. Call this from every path that mutates `items` (or a price) instead
+  // of scattering setReminderStage calls next to each one — one place to
+  // remember, not a list of conditions to keep in sync.
+  const invalidateReminderCopy = useCallback(() => {
+    setReminderStage('copy');
+  }, []);
 
   // ── Price estimation ─────────────────────────────────────────
   // Store choice is server-persisted (settings table) so the Mac and phone
@@ -414,6 +429,7 @@ export default function ShoppingList({ isOffline }) {
     // Throws on failure so the modal can show the error and stay open.
     const created = await api.shopping.add(name, qty, category || undefined);
     setItems((prev) => [...prev, created]);
+    invalidateReminderCopy();
     // Reveal the item's category in case it was toggled off (or empty before).
     setActiveCats((prev) => new Set(prev).add(catOf(created)));
     setFormOpen(false);
@@ -425,6 +441,10 @@ export default function ShoppingList({ isOffline }) {
     setItems((prev) =>
       prev.map((it) => it.id === id ? { ...it, checked: !it.checked } : it)
     );
+    // buildListText filters to unchecked items only, so a check/uncheck
+    // genuinely changes what would be pasted — reset regardless of whether
+    // the request below ends up succeeding or reverting.
+    invalidateReminderCopy();
     try {
       const updated = await api.shopping.toggle(id);
       setItems((prev) => prev.map((it) => it.id === id ? updated : it));
@@ -439,6 +459,7 @@ export default function ShoppingList({ isOffline }) {
   async function handleDelete(id) {
     if (isOffline) return;
     setItems((prev) => prev.filter((it) => it.id !== id));
+    invalidateReminderCopy();
     try {
       await api.shopping.remove(id);
     } catch (e) {
@@ -451,6 +472,7 @@ export default function ShoppingList({ isOffline }) {
     const checked = items.filter((i) => i.checked);
     if (checked.length === 0) return;
     setItems((prev) => prev.filter((i) => !i.checked));
+    invalidateReminderCopy();
     try {
       await api.shopping.clearChecked();
     } catch (e) {
@@ -474,6 +496,13 @@ export default function ShoppingList({ isOffline }) {
     window.location.href = url;
   }
 
+  // The round trip (Copy, then Send) is done once this runs, so the button
+  // goes back to offering a fresh Copy — the next useful action.
+  function handleSendClick() {
+    handleSendToShortcut();
+    setReminderStage('copy');
+  }
+
   async function handleCopyForReminders() {
     const text = buildListText(items);
     if (!text) return;
@@ -485,11 +514,17 @@ export default function ShoppingList({ isOffline }) {
         await navigator.clipboard.writeText(text);
         setCopyMsg('Copied — paste into Reminders');
         setTimeout(() => setCopyMsg(''), 3000);
+        // Secure context: flip to Send right alongside the copy confirmation
+        // above, since the clipboard write already succeeded.
+        setReminderStage('send');
         return;
       } catch {
         // Blocked by permissions — fall through to the panel.
       }
     }
+    // Non-secure context (or a blocked clipboard permission): the flip to
+    // Send happens when CopyFallbackModal is closed, not here — the user
+    // hasn't actually copied anything yet at the point they tap this button.
     setCopyFallback(text);
   }
 
@@ -504,6 +539,7 @@ export default function ShoppingList({ isOffline }) {
     setMovingToPantry(true);
     // Optimistically remove checked items from list
     setItems((prev) => prev.filter((i) => !i.checked));
+    invalidateReminderCopy();
     try {
       const result = await api.shopping.moveToPantry();
       const n = result?.moved?.length ?? 0;
@@ -607,6 +643,7 @@ export default function ShoppingList({ isOffline }) {
     try {
       const data = await api.shopping.setPrice(item.id, price);
       setPriceItems(data.items);
+      invalidateReminderCopy();
       // Only close out THIS row's editor — a slow save must not clobber a
       // different row the user has since opened.
       setEditingPriceId((cur) => (cur === item.id ? null : cur));
@@ -714,7 +751,16 @@ export default function ShoppingList({ isOffline }) {
       )}
 
       {copyFallback !== null && (
-        <CopyFallbackModal text={copyFallback} onClose={() => setCopyFallback(null)} />
+        <CopyFallbackModal
+          text={copyFallback}
+          onClose={() => {
+            setCopyFallback(null);
+            // Non-secure context: the button only advances to Send once the
+            // user has actually had the text in hand via this panel, not the
+            // moment they tapped Copy to open it.
+            setReminderStage('send');
+          }}
+        />
       )}
 
       {storeModalOpen && (
@@ -768,32 +814,22 @@ export default function ShoppingList({ isOffline }) {
 
         {items.length > 0 && (
           <div className="shop-actions">
+            {/* Send to Reminders and Copy for Reminders share one button, one
+                state at a time — Copy first (the Shortcut reads the
+                clipboard), then Send, then back to Copy. Copy is purely
+                local — deliberately not gated on isOffline; Send wasn't
+                either before this change, so that stays as-is too. */}
             <button
               className="btn btn-ghost shop-action-btn"
-              onClick={handleSendToShortcut}
+              onClick={reminderStage === 'send' ? handleSendClick : handleCopyForReminders}
               disabled={uncheckedCount === 0}
-              title={`Send the list to the "${SHORTCUT_NAME}" shortcut, which adds one reminder per item`}
+              title={
+                reminderStage === 'send'
+                  ? `Send the list to the "${SHORTCUT_NAME}" shortcut, which adds one reminder per item`
+                  : 'Copy unchecked items, one per line, to paste into Reminders'
+              }
             >
-              Send to Reminders
-            </button>
-            {/* Copy is purely local — deliberately not gated on isOffline. */}
-            <button
-              className="btn btn-ghost shop-action-btn"
-              onClick={handleCopyForReminders}
-              disabled={uncheckedCount === 0}
-              title="Copy unchecked items, one per line, to paste into Reminders"
-            >
-              {copyMsg || `Copy ${uncheckedCount} for Reminders`}
-            </button>
-            <button
-              className="btn btn-ghost shop-action-btn"
-              onClick={() => setStoreModalOpen(true)}
-              disabled={isOffline}
-              title="Choose the store used for price estimates"
-            >
-              {storeInfo.store
-                ? `Store: ${storeInfo.store}${storeInfo.zip ? ` · ${storeInfo.zip}` : ''}`
-                : 'Set store'}
+              {reminderStage === 'send' ? 'Send to Reminders' : (copyMsg || `Copy ${uncheckedCount} for Reminders`)}
             </button>
             <button
               className="btn btn-ghost shop-action-btn"

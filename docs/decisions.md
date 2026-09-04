@@ -435,3 +435,78 @@ Estimate should overwrite manual."
 - **Editing is tap-the-price inline**, not a per-row edit button (the 375px row already carries
   name, qty, price and ×) and not an item sheet (slower for a quick fix). Tapping the `—` on an
   unpriced item is how you price something *before* estimating.
+
+## 2026-09-03 — Shopping List action row: one button + an overflow menu
+The row under the category filters had grown to **four identical ghost pills — six when any item
+is checked** (Move to Pantry, Clear checked appear), which wrapped to two lines on phone and gave
+no sense of what the main action was.
+
+- **New shape: `[ Update prices ] [ ⋯ ]`.** Everything else moves into a popover menu — Send to
+  Reminders, Copy for Reminders, Set store, then a divider and the checked-only pair. The row is now
+  a fixed two controls wide **no matter how many actions exist**, which is the property that matters:
+  the old layout got worse exactly when the user was mid-shop and had items checked.
+- **All controls keep equal visual weight** — the user explicitly declined making Update prices a
+  filled/accent primary. The `⋯` is a quiet sibling, not a de-emphasized one.
+- **The "Store: H-E-B · 78705" pill was pure redundancy** and its removal from the row costs
+  nothing: the total block directly beneath already prints the store and ZIP, and Settings now owns
+  the setting. It survives as "Set store" in the menu.
+- **Must not regress:** the Copy-for-Reminders fallback. The app is served over plain HTTP via
+  Tailscale, so it is **not a secure context** and `navigator.clipboard` is undefined on the phone —
+  `CopyFallbackModal` is the path that makes copying work there at all. Moving the control into a
+  menu must not disturb it.
+
+## 2026-09-03 — Reminders becomes one toggling button; Set store pill removed
+Reverted the overflow-menu experiment (user: "no i dont like them hidden like that") and instead
+tightened the row without hiding anything.
+
+- **The "Store: <name> · <zip>" pill is removed.** Redundant three ways over: the total block
+  directly beneath prints the store and ZIP, and Settings (My Kitchen / the phone gear) owns the
+  setting. Nothing is lost.
+- **Send to Reminders and Copy for Reminders become ONE button showing one state at a time.**
+  Default is **Copy**; pressing it flips the button to **Send**. That matches how the pair is
+  actually used — the Shortcut reads the clipboard, so Copy must happen first and Send is
+  meaningless before it. Two always-visible buttons implied an order that didn't exist.
+- **It reverts to Copy whenever the copied text could be out of date**: leaving the Shopping List,
+  and any item mutation — add, delete, rename, qty edit, **check/uncheck** (the copy text is built
+  from *unchecked* items only, `buildListText`), and a manual price edit. The user said "add/edit
+  any item"; the governing principle is that the button must never offer to Send a clipboard that
+  no longer matches the list.
+- **Pressing Send returns it to Copy** — the round trip is finished, and the next thing the user
+  would want is a fresh copy.
+- **On the phone the flip happens when the fallback panel closes, not on tap.** There is no
+  `navigator.clipboard` in a non-secure context, so Copy opens `CopyFallbackModal` for a manual
+  select-and-copy; flipping on tap would advance the button before the user actually had the text.
+
+## 2026-09-03 — Receipts build the price database; AI only fills the gaps
+User: "So it should build a database price from receipts and if the database doesn't have anything
+then make the AI estimate." Plus: scale prices across differing quantities, and one receipt scan
+should both stock the Pantry and record prices.
+
+- **New `receipt_prices` table — an append-only observation log, NOT a cache.** Each scanned line
+  is a dated observation (`store, zip, name_key, name, qty_text, base_amount, dim, total_price,
+  unit_price, purchased_at`). Deliberately separate from `price_book`: that table is a *cache* whose
+  entries are meant to be overwritten and expired, whereas receipts are **real data the user paid
+  for** and must never be clobbered by a cache write. Keeping observations also means price history
+  comes for free later.
+- **Precedence at display/lookup: manual → receipt → AI → unpriced.** Manual stays on top because
+  it is an explicit "this costs X" from the user. Receipt beats AI because a price actually paid
+  beats a guess. Because the two live in different tables, the existing rule "a press overwrites
+  manual" stays true *and* harmless: the manual row reverts to `ai`, and the receipt observation —
+  untouched in its own table — simply becomes the winner again.
+- **Items with a receipt price are excluded from the Gemini batch entirely.** This is the user's
+  rule read literally, and the payoff is real: as receipts accumulate, a press costs less and less,
+  and eventually nothing for a regular shop.
+- **Quantities scale.** A receipt line of 1.87 lb for $8.41 yields $4.50/lb, so a list asking 1.5 lb
+  shows $6.74. Reuse `parseRequired()`/the unit tables in `server/storeQty.js` — do NOT write a
+  second unit parser. Scaling applies only when receipt and list quantities share a dimension
+  (weight/volume/count); anything unscalable (`1 bag`) falls back to the observed price shown with
+  its `qty_priced` label, which the UI already renders.
+- **Most recent observation wins** when the same item was bought several times. Averaging was
+  rejected: it blends a sale price with a normal one and produces a number that was never true.
+- **Matching is exact on the normalized name only, for now.** The receipt prompt already expands
+  register abbreviations (`BNLS SKNLS CHKN BRST` → "Boneless skinless chicken breast"), but that
+  still will not always equal the list's wording. Fuzzy matching is a known follow-up, not v1 —
+  a wrong match would attach a real price to the wrong food, which is worse than no match.
+- **One scan does both.** The existing Pantry receipt import gains price capture; no second scan,
+  no new screen. The receipt reader's prompt currently *tells the model to skip* price lines
+  (`receipt.js:60`) — that instruction is what has to change.
