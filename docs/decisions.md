@@ -496,11 +496,16 @@ should both stock the Pantry and record prices.
 - **Items with a receipt price are excluded from the Gemini batch entirely.** This is the user's
   rule read literally, and the payoff is real: as receipts accumulate, a press costs less and less,
   and eventually nothing for a regular shop.
-- **Quantities scale.** A receipt line of 1.87 lb for $8.41 yields $4.50/lb, so a list asking 1.5 lb
-  shows $6.74. Reuse `parseRequired()`/the unit tables in `server/storeQty.js` — do NOT write a
-  second unit parser. Scaling applies only when receipt and list quantities share a dimension
-  (weight/volume/count); anything unscalable (`1 bag`) falls back to the observed price shown with
-  its `qty_priced` label, which the UI already renders.
+- **Quantities scale.** A receipt line of 1.87 lb for $8.41 yields $4.4973/lb, so a list asking
+  1.5 lb shows **$6.75**. (An earlier draft of this entry said $6.74 — that was my own loose
+  arithmetic, rounding the unit price to $4.50 before multiplying, and a builder briefly fitted the
+  algorithm to it by flooring. Corrected: prices **round** to the cent, matching `coercePrice`.
+  Flooring systematically under-estimated, which is the wrong direction for a budget.)
+  Reuse `parseRequired()`/the unit tables in `server/storeQty.js` — do NOT write a second unit
+  parser. Scaling applies across weight and volume, and across **bare counts** (`12` → `6`) via a
+  new `isBareCount()` helper: a quantity carrying a container noun (`1 bag`, `2 jars`) never scales,
+  since `parseRequired()` classifies those as `count` too. Anything unscalable falls back to the
+  observed price shown with its `qty_priced` label, which the UI already renders.
 - **Most recent observation wins** when the same item was bought several times. Averaging was
   rejected: it blends a sale price with a normal one and produces a number that was never true.
 - **Matching is exact on the normalized name only, for now.** The receipt prompt already expands

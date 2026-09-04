@@ -18,7 +18,7 @@ import {
   createReadStream,
 } from 'node:fs';
 import db from './db.js';
-import { toStoreQuantity, parseRequired, computeBuyAmount, isBumpable } from './storeQty.js';
+import { toStoreQuantity, parseRequired, computeBuyAmount, isBumpable, isBareCount } from './storeQty.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1276,6 +1276,139 @@ const MAX_ESTIMATE_ITEMS = 60;
 // The client also disables the button while pending.
 let estimateInFlight = false;
 
+// ---------------------------------------------------------------------------
+// Receipt prices — lookup + scaling.
+//
+// receipt_prices is an APPEND-ONLY observation log (see server/db.js), never
+// a cache: it is never upserted or overwritten by this feature, only ever
+// inserted into. "Most recent wins" is enforced purely by the ORDER BY /
+// LIMIT 1 in this lookup, never by an average.
+// ---------------------------------------------------------------------------
+
+const receiptLookupStmt = db.prepare(`
+  SELECT * FROM receipt_prices
+  WHERE store = ? AND zip = ? AND name_key = ?
+  ORDER BY purchased_at DESC, created_at DESC
+  LIMIT 1
+`);
+
+/**
+ * Look up the most recent receipt observation for an item, or null.
+ * @param {string} normStore  Already normalizeStoreName()'d.
+ * @param {string} normZip    Already normalizeZipValue()'d.
+ * @param {string} nameKey    Already normalizeName()'d.
+ */
+function lookupReceiptPrice(normStore, normZip, nameKey) {
+  return receiptLookupStmt.get(normStore, normZip, nameKey) ?? null;
+}
+
+// Dimensions parseRequired() can hand back that represent a genuine
+// continuous/per-unit measure worth scaling. 'count' is included but is
+// ambiguous on its own — see the isBareCount check inside
+// scaleReceiptObservation below — because parseRequired() also returns
+// 'count' as its fallback for any quantity with no recognized unit at all,
+// which includes container words like "1 bag" or "1 jar". Weight, volume,
+// and clove amounts are unambiguous continuous/physical measures and always
+// scale safely; a bare count ("12", "6") is equally safe, but a container
+// count ("1 bag") is not, so 'count' needs the extra bare-count test.
+const RECEIPT_SCALABLE_DIMS = new Set(['weight', 'volume', 'clove', 'count']);
+
+/**
+ * Price a shopping-list item's requested qty against a receipt observation,
+ * scaling when the dimensions match and both quantities parse to a usable
+ * amount; otherwise falling back to the observed price as a whole.
+ *
+ * The final scaled price is ROUNDED to the cent — the same
+ * `Math.round(n * 100) / 100` convention `coercePrice` (extract/price.js)
+ * already uses for every other price in this app. (No epsilon guard is
+ * needed: verified that an exact-quantity match — receipt qty === list qty —
+ * reproduces the observed total to the cent under plain rounding.)
+ *
+ * @param {object} obs  A receipt_prices row (base_amount, dim, unit_price, total_price, qty_text).
+ * @param {string} listQtyText  The shopping-list row's own `qty` string.
+ * @returns {{ price: number, qty_priced: string|null }}
+ *   qty_priced is null when the full requested qty was priced exactly
+ *   (scaled); it is the receipt's own qty string when falling back, so the
+ *   UI can render "priced as …".
+ */
+function scaleReceiptObservation(obs, listQtyText) {
+  const listQty = String(listQtyText ?? '').trim();
+  const listParsed = parseRequired(listQty);
+
+  let canScale =
+    RECEIPT_SCALABLE_DIMS.has(obs.dim) &&
+    obs.dim === listParsed.dim &&
+    obs.base_amount > 0 &&
+    listParsed.base > 0 &&
+    typeof obs.unit_price === 'number';
+
+  // 'count' is ambiguous (see the RECEIPT_SCALABLE_DIMS comment above): only
+  // scale it when BOTH sides are a bare numeric count with no unit word at
+  // all ("12", "6") — a container noun on either side ("1 bag", "2 jars")
+  // falls through to the unscalable branch below instead.
+  if (canScale && obs.dim === 'count') {
+    canScale = isBareCount(obs.qty_text) && isBareCount(listQty);
+  }
+
+  if (canScale) {
+    const raw = obs.unit_price * listParsed.base;
+    const price = Math.round(raw * 100) / 100;
+    return { price, qty_priced: null };
+  }
+
+  return { price: obs.total_price, qty_priced: obs.qty_text || null };
+}
+
+/**
+ * Record one price observation per readable-price item from a receipt scan.
+ * Called once, immediately, from POST /api/pantry/receipt — a scan records
+ * prices whether or not the user goes on to bulk-add anything to the
+ * Pantry, since the receipt itself is already proof of what was paid.
+ *
+ * Store attribution: the store name printed on the receipt when legible,
+ * else the app's configured shopping store (`shopping.store`). ZIP always
+ * comes from the configured setting (`shopping.zip`) — receipts essentially
+ * never print one, and it's what price_book already keys lookups on.
+ * purchased_at: the receipt's own printed date when the model could read
+ * it, else the time of this scan.
+ *
+ * Never throws — a receipt with no usable store attribution simply records
+ * nothing (the Pantry review still proceeds).
+ *
+ * @param {{ store: string, date: string }} receipt  As returned by extractReceipt.
+ * @param {{ name: string, qty: string, price: number|null }[]} items
+ */
+function recordReceiptPriceObservations(receipt, items) {
+  const configuredStore = getSetting('shopping.store', '');
+  const rawStore = (receipt.store && receipt.store.trim()) ? receipt.store : configuredStore;
+  if (!rawStore) return; // nowhere to attribute the observation — skip silently
+
+  const store = normalizeStoreName(rawStore);
+  const zip = normalizeZipValue(getSetting('shopping.zip', ''));
+
+  const purchasedAt = /^\d{4}-\d{2}-\d{2}$/.test(receipt.date || '')
+    ? receipt.date
+    : new Date().toISOString();
+
+  const nowIso = new Date().toISOString();
+  const insert = db.prepare(`
+    INSERT INTO receipt_prices
+      (id, store, zip, name_key, name, qty_text, base_amount, dim, total_price, unit_price, purchased_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const item of items) {
+    if (typeof item.price !== 'number') continue; // unreadable price — nothing to observe
+    const nameKey = normalizeName(item.name);
+    const qtyText = String(item.qty ?? '').trim();
+    const { base, dim } = parseRequired(qtyText);
+    const unitPrice = base > 0 ? item.price / base : null;
+    insert.run(
+      randomUUID(), store, zip, nameKey, item.name, qtyText, base, dim, item.price, unitPrice, purchasedAt, nowIso,
+    );
+  }
+}
+
 // GET /api/shopping-list/store
 app.get('/api/shopping-list/store', (_req, res) => {
   res.json({
@@ -1341,6 +1474,13 @@ app.put('/api/shopping-list/store', (req, res) => {
 // spec, a manual-price write replaces the client's whole price snapshot
 // rather than patching one entry, so both routes must produce an identical
 // payload from an identical query.
+//
+// Precedence (manual -> receipt -> AI -> unpriced), per docs/decisions.md
+// "2026-09-03 — Receipts build the price database":
+//   1. A price_book row with source: 'manual' wins outright.
+//   2. Otherwise, the most recent receipt_prices observation, scaled to
+//      this row's own qty when possible (see scaleReceiptObservation).
+//   3. Otherwise the price_book AI cache, exactly as before.
 function buildPricesPayload() {
   const store = getSetting('shopping.store', '');
   const zip = getSetting('shopping.zip', '');
@@ -1377,12 +1517,30 @@ function buildPricesPayload() {
       // POST /estimate does — but with NO `updated_at` comparison against
       // PRICE_STALE_MS. That omission is the entire point of this route;
       // see the staleness note above the route.
-      const cacheRow = lookupStmt.get(normStore, normZip, nameKey, qty);
-      if (cacheRow) {
-        price = cacheRow.unit_price;
-        qtyPriced = cacheRow.qty_priced;
-        updatedAt = cacheRow.updated_at;
-        source = cacheRow.source ?? 'ai';
+      const bookRow = lookupStmt.get(normStore, normZip, nameKey, qty);
+
+      if (bookRow && bookRow.source === 'manual') {
+        // 1. Manual always wins outright.
+        price = bookRow.unit_price;
+        qtyPriced = bookRow.qty_priced;
+        updatedAt = bookRow.updated_at;
+        source = 'manual';
+      } else {
+        // 2. Most recent receipt observation, scaled to this row's qty.
+        const receiptRow = lookupReceiptPrice(normStore, normZip, nameKey);
+        if (receiptRow) {
+          const scaled = scaleReceiptObservation(receiptRow, qty);
+          price = scaled.price;
+          qtyPriced = scaled.qty_priced;
+          updatedAt = receiptRow.purchased_at;
+          source = 'receipt';
+        } else if (bookRow) {
+          // 3. AI cache fallback (never a 'manual' row here, per the branch above).
+          price = bookRow.unit_price;
+          qtyPriced = bookRow.qty_priced;
+          updatedAt = bookRow.updated_at;
+          source = bookRow.source ?? 'ai';
+        }
       }
     }
 
@@ -1591,9 +1749,38 @@ app.post('/api/shopping-list/estimate', async (req, res) => {
       // docs/decisions.md "2026-09-03 — Manual prices"). It falls straight
       // into the normal batch/grouping path below like any other miss, so it
       // gets re-priced by Gemini this press and flips back to source: 'ai'.
+      // Checked BEFORE the receipt lookup below on purpose: manual is an
+      // unconditional miss regardless of whether a receipt observation also
+      // exists for this item.
+      if (cacheRow && cacheRow.source === 'manual') {
+        const groupKey = `${nameKey}\u0000${qty}`;
+        if (!missRowsByKey.has(groupKey)) missRowsByKey.set(groupKey, { nameKey, rows: [] });
+        missRowsByKey.get(groupKey).rows.push(row);
+        continue;
+      }
+
+      // Receipt precedence: a receipt observation beats the AI cache and is
+      // EXCLUDED FROM THE GEMINI BATCH ENTIRELY — the whole payoff of the
+      // receipt-price feature (a press costs less, and eventually nothing,
+      // for a regular shop). Unlike the AI cache, a receipt observation
+      // never goes stale here and is unaffected by `refresh` — it is a
+      // record of real money spent, not a re-askable estimate. See
+      // docs/decisions.md "2026-09-03 — Receipts build the price database".
+      const receiptRow = lookupReceiptPrice(normStore, normZip, nameKey);
+      if (receiptRow) {
+        const scaled = scaleReceiptObservation(receiptRow, qty);
+        resolved.set(row.id, {
+          price: scaled.price,
+          qty_priced: scaled.qty_priced,
+          cached: true,
+          updated_at: receiptRow.purchased_at,
+          source: 'receipt',
+        });
+        continue;
+      }
+
       const isHit = !refresh
         && cacheRow
-        && cacheRow.source !== 'manual'
         && new Date(cacheRow.updated_at).getTime() > staleBefore;
 
       if (isHit) {
@@ -2171,8 +2358,13 @@ app.post('/api/pantry/:id/to-shopping', (req, res) => {
 // ===========================================================================
 
 // POST /api/pantry/receipt — read a photo of a grocery receipt and return the
-// grocery items on it as a DRAFT. Nothing is persisted here: the client shows
-// the list for review, then posts the keepers to /api/pantry/bulk.
+// grocery items on it as a DRAFT. The Pantry side is not persisted here: the
+// client shows the list for review, then posts the keepers to /api/pantry/bulk.
+// PRICES ARE THE EXCEPTION: this one scan also records a receipt_prices
+// observation for every item whose price was readable, immediately —
+// regardless of whether the user goes on to bulk-add anything to the Pantry.
+// One scan does both jobs; there is no second endpoint and no second upload
+// (see docs/decisions.md "2026-09-03 — Receipts build the price database").
 app.post('/api/pantry/receipt', uploadImage.single('receipt'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No receipt image uploaded.', code: 'UNSUPPORTED_URL' });
@@ -2206,8 +2398,13 @@ app.post('/api/pantry/receipt', uploadImage.single('receipt'), async (req, res) 
       name:     it.name,
       qty:      it.qty,
       category: it.category ?? guessCategory(it.name),
+      price:    it.price, // number | null — a null price is still a real item for the Pantry
     }));
-    res.json({ store: receipt.store, items });
+    // Record price observations for this scan now, independent of the
+    // Pantry review step below — the receipt is already proof of what was
+    // paid, whether or not the user keeps every line for their inventory.
+    recordReceiptPriceObservations(receipt, items);
+    res.json({ store: receipt.store, date: receipt.date || null, items });
   } catch (err) {
     if (err.code && err.userMessage) {
       console.warn(`[pantry/receipt] ${err.code}: ${err.message}`);

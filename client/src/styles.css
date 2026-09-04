@@ -1832,9 +1832,24 @@ a:hover { color: var(--accent-dark); }
   font-weight: 600;
 }
 
+/* Receipt price marker — same accent color as "manual" (both mean "not a
+   guess"), but a distinct leading glyph (a checkmark, not the manual dot) so
+   the two are never mistaken for each other. Regular weight, not bold, keeps
+   it a notch below the manual marker in visual weight: manual is a value the
+   user typed in directly, receipt is inferred/scaled from a scan. No new
+   color introduced — reuses --accent, same as .manual. */
+.shop-item-price.receipt {
+  color: var(--accent);
+  font-weight: 400;
+}
+
 .shop-item-price-dot {
   font-size: 8px;
   line-height: 1;
+}
+
+.shop-item-price-dot-receipt {
+  font-size: 9px;
 }
 
 .shop-item-price-edit {

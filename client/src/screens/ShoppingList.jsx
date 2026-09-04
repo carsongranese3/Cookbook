@@ -30,6 +30,21 @@ function buildListText(items) {
 // reminders. Must match the Shortcut exactly, or Shortcuts reports "not found".
 const SHORTCUT_NAME = 'Add to Groceries';
 
+// Format a receipt-priced item's `updated_at` (the observation's `purchased_at`,
+// docs/api.md § GET /prices) for the price marker's title/aria-label. That value
+// is either a bare YYYY-MM-DD (the receipt's own printed date) or a full ISO
+// timestamp (fallback to scan time) — append a noon time only to the bare form,
+// same trick as utils/week.js's formatDayDate, so a UTC-midnight date string
+// can't roll back a day in a negative-offset timezone. Matches the app's
+// existing "Aug 12" short-date convention (HistoryScreen, week.js).
+function formatReceiptDate(value) {
+  if (!value) return null;
+  const iso = value.includes('T') ? value : `${value}T12:00:00`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 // Legacy execCommand copy, for the non-secure-context case (this app is served
 // over plain HTTP via Tailscale, so navigator.clipboard does not exist there).
 //
@@ -701,23 +716,49 @@ export default function ShoppingList({ isOffline }) {
   const unpricedCount = items.length - pricedCount;
   const hasPrices = pricedCount > 0;
 
-  // Manual vs AI provenance, for the total block's disclaimer — it has to stay
-  // truthful once the list is mixed (docs/decisions.md "2026-09-03 — Manual
-  // prices"). `source` comes back on every priced item from GET /prices and
-  // POST /estimate: 'ai' | 'manual' | null (unpriced).
+  // Provenance mix, for the total block's disclaimer — it has to stay truthful
+  // no matter which of the three sources are on screen (docs/decisions.md
+  // "2026-09-03 — Manual prices" and "— Receipts build the price database").
+  // `source` comes back on every priced item from GET /prices and POST
+  // /estimate: 'ai' | 'manual' | 'receipt' | null (unpriced). An unrecognized
+  // source (older cache row, future addition) falls through to the AI bucket
+  // rather than crashing or silently vanishing from the count.
   const manualPricedCount = items.filter((it) => {
     const pe = priceById.get(it.id);
     return pe && pe.price != null && pe.source === 'manual';
   }).length;
-  const aiPricedCount = pricedCount - manualPricedCount;
-  const priceDisclaimer =
-    manualPricedCount === 0
-      ? 'AI estimate — not a real price.'
-      : aiPricedCount === 0
-        ? (pricedCount === 1
-            ? 'You set this price — not an AI estimate.'
-            : 'You set these prices — not AI estimates.')
-        : `AI estimate — not a real price, except ${manualPricedCount} price${manualPricedCount === 1 ? '' : 's'} you set yourself.`;
+  const receiptPricedCount = items.filter((it) => {
+    const pe = priceById.get(it.id);
+    return pe && pe.price != null && pe.source === 'receipt';
+  }).length;
+  const aiPricedCount = pricedCount - manualPricedCount - receiptPricedCount;
+  const realPricedCount = manualPricedCount + receiptPricedCount; // real money, either way
+
+  let priceDisclaimer;
+  if (aiPricedCount === 0 && pricedCount > 0) {
+    // Nothing on screen is a guess — every price is either typed in or paid.
+    if (receiptPricedCount === 0) {
+      priceDisclaimer = pricedCount === 1
+        ? 'You set this price — not an AI estimate.'
+        : 'You set these prices — not AI estimates.';
+    } else if (manualPricedCount === 0) {
+      priceDisclaimer = receiptPricedCount === 1
+        ? 'From your receipts — a real price, not an AI estimate.'
+        : 'From your receipts — real prices, not AI estimates.';
+    } else {
+      priceDisclaimer = 'Real prices — some you set, some from your receipts.';
+    }
+  } else if (realPricedCount === 0) {
+    priceDisclaimer = 'AI estimate — not a real price.';
+  } else {
+    // Mixed: at least one AI guess and at least one real price.
+    const realDesc = manualPricedCount > 0 && receiptPricedCount > 0
+      ? `${manualPricedCount} you set and ${receiptPricedCount} from your receipts`
+      : manualPricedCount > 0
+        ? `${manualPricedCount} price${manualPricedCount === 1 ? '' : 's'} you set yourself`
+        : `${receiptPricedCount} price${receiptPricedCount === 1 ? '' : 's'} from your receipts`;
+    priceDisclaimer = `AI estimate — not a real price, except ${realDesc}.`;
+  }
 
   // The total is ALWAYS a live computation over cached item prices + current
   // checked state — never bound to a response's `total`/`total_unchecked`.
@@ -974,17 +1015,26 @@ export default function ShoppingList({ isOffline }) {
                     const pe = priceById.get(item.id);
                     const hasPrice = Boolean(pe) && pe.price != null;
                     const isManual = pe?.source === 'manual';
+                    const isReceipt = pe?.source === 'receipt';
                     const isEditingPrice = editingPriceId === item.id;
                     const displayName = titleCase(item.name);
                     // Priced rows: surface the qty the estimate actually assumed
                     // (spec §7 — matters most when the item's own qty was blank
-                    // or ambiguous), or a plain note when the price is the
-                    // user's own. Unpriced rows keep the existing message, plus
-                    // an invitation to price it by hand.
+                    // or ambiguous), a plain note when the price is the user's
+                    // own, or where a receipt price came from (with the date, when
+                    // readable — docs/api.md: `updated_at` is the observation's
+                    // `purchased_at` for a receipt-sourced item). Unpriced rows
+                    // keep the existing message, plus an invitation to price it
+                    // by hand. An unrecognized `source` (e.g. the backend hasn't
+                    // shipped `receipt` yet) falls through to the qty_priced/plain
+                    // case rather than showing nothing.
+                    const receiptDate = isReceipt ? formatReceiptDate(pe.updated_at) : null;
                     const priceTitle = hasPrice
                       ? (isManual
                           ? 'You set this price manually'
-                          : (pe.qty_priced ? `Priced as ${pe.qty_priced}` : undefined))
+                          : isReceipt
+                            ? (receiptDate ? `From your receipt, ${receiptDate}` : 'From your receipt')
+                            : (pe.qty_priced ? `Priced as ${pe.qty_priced}` : undefined))
                       : 'No estimate available — tap to set a price';
                     return (
                     <Fragment key={item.id}>
@@ -1039,17 +1089,18 @@ export default function ShoppingList({ isOffline }) {
                       ) : (
                         <button
                           type="button"
-                          className={`shop-item-price ${item.checked ? 'checked' : ''} ${isManual ? 'manual' : ''}`}
+                          className={`shop-item-price ${item.checked ? 'checked' : ''} ${isManual ? 'manual' : ''} ${isReceipt ? 'receipt' : ''}`}
                           onClick={() => startEditPrice(item, hasPrice ? pe.price : null)}
                           title={priceTitle}
                           aria-label={
                             hasPrice
-                              ? `Edit price for ${displayName}, currently $${pe.price.toFixed(2)}${isManual ? ', set by you' : ''}`
+                              ? `Edit price for ${displayName}, currently $${pe.price.toFixed(2)}${isManual ? ', set by you' : isReceipt ? ', from your receipt' + (receiptDate ? `, ${receiptDate}` : '') : ''}`
                               : `Set price for ${displayName}`
                           }
                           disabled={isOffline}
                         >
                           {isManual && hasPrice && <span className="shop-item-price-dot" aria-hidden="true">•</span>}
+                          {isReceipt && hasPrice && <span className="shop-item-price-dot shop-item-price-dot-receipt" aria-hidden="true">✓</span>}
                           {hasPrice ? `$${pe.price.toFixed(2)}` : '—'}
                         </button>
                       )}

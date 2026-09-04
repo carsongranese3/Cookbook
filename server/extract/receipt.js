@@ -18,10 +18,18 @@
  *   TIMEOUT      — request exceeded GEMINI_TIMEOUT_MS
  *   PARSE_FAILED — could not parse valid JSON after one retry
  *   NO_RECIPE    — the image parsed fine but held no grocery lines
+ *
+ * Also reads what was actually PAID for each line (see docs/decisions.md
+ * "2026-09-03 — Receipts build the price database") and, when legible, the
+ * date printed on the receipt — the caller uses both to record observations
+ * in the receipt_prices table. A line whose price is unreadable still comes
+ * back as an item (for the Pantry) with `price: null` — never dropped and
+ * never defaulted to a guessed number.
  */
 
 import { readFile }            from 'node:fs/promises';
 import { ExtractError, CODES } from './errors.js';
+import { coercePrice }         from './price.js';
 import {
   TIMEOUT_MS,
   parseModelJson,
@@ -44,14 +52,15 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB
  * @returns {string}
  */
 function buildReceiptPrompt(categories) {
-  return `You read a photo of a grocery store receipt and list the groceries on it.
+  return `You read a photo of a grocery store receipt and list the groceries on it, including what was actually paid for each.
 
 Return ONLY valid JSON — no prose, no markdown code fences (no \`\`\`json), no commentary before or after. The JSON must match this exact shape:
 
 {
   "store": "string — the store name printed on the receipt, or \\"\\" if unreadable",
+  "date": "string — the purchase date printed on the receipt, formatted YYYY-MM-DD, or \\"\\" if unreadable",
   "items": [
-    { "name": "string", "qty": "string", "category": "string" }
+    { "name": "string", "qty": "string", "category": "string", "price": 4.29 }
   ]
 }
 
@@ -59,11 +68,12 @@ Rules you must follow:
 1. EXPAND ABBREVIATIONS into plain, recognisable grocery names. Receipts compress names heavily — "GV WHL MLK GAL" is "Whole milk", "BNLS SKNLS CHKN BRST" is "Boneless skinless chicken breast", "SHRP CHDR" is "Sharp cheddar". Use title case. Never output the raw receipt code as the name.
 2. INCLUDE ONLY FOOD, DRINK, AND COOKING INGREDIENTS. Skip non-grocery lines entirely: subtotal, tax, total, change due, card/payment lines, loyalty and coupon lines, bag fees, deposits, store hours, phone numbers, barcodes, and non-food goods such as cleaning supplies, paper goods, toiletries, pet supplies, and pharmacy items.
 3. "qty" is the amount PURCHASED, as a short display string: a count ("2"), a weight ("1.5 lb", "12 oz"), or a volume ("1 gal", "2 qt"). A receipt line like "3 @ 1.99" means qty "3"; a weighed line like "1.34 lb @ 4.99/lb" means qty "1.34 lb". Use "" only when the amount is genuinely unreadable — do not guess a number that is not on the receipt.
-4. ALL MEASUREMENTS MUST BE IMPERIAL. Convert any metric amount: grams/kilograms → oz or lb, millilitres/litres → fl oz, cups, quarts, or gallons.
-5. "category" must be EXACTLY one of these strings: ${JSON.stringify(categories)}. Choose the best fit for the food itself; use "Other" only when nothing else fits.
-6. Do NOT invent items. Only list lines that actually appear on the receipt. If a line is too blurry to read, omit it rather than guess.
-7. If the image is not a receipt, or contains no grocery lines at all, return {"store":"","items":[]}.
-8. Return nothing outside the JSON object.`;
+4. "price" is what was actually PAID for that line — the line's own total (after any per-item discount shown on that same line), as a plain number in USD, no currency symbol, no range, no text. This is real money the user spent, so read it carefully: use "price": null ONLY when that line's price is genuinely unreadable or missing — never guess, never estimate, and never invent a number that is not on the receipt. Do not include tax or the receipt's overall total as an item's price.
+5. ALL MEASUREMENTS MUST BE IMPERIAL. Convert any metric amount: grams/kilograms → oz or lb, millilitres/litres → fl oz, cups, quarts, or gallons.
+6. "category" must be EXACTLY one of these strings: ${JSON.stringify(categories)}. Choose the best fit for the food itself; use "Other" only when nothing else fits.
+7. Do NOT invent items. Only list lines that actually appear on the receipt. If a line is too blurry to read, omit it rather than guess.
+8. If the image is not a receipt, or contains no grocery lines at all, return {"store":"","date":"","items":[]}.
+9. Return nothing outside the JSON object.`;
 }
 
 const RETRY_PROMPT =
@@ -77,11 +87,13 @@ const RETRY_PROMPT =
 /**
  * Validate and coerce the model's raw output into receipt-item shape.
  * Unparseable entries are dropped rather than defaulted, so the review list
- * never shows a blank row.
+ * never shows a blank row. A line's price, however, is never a reason to
+ * drop the item itself — an unreadable price just yields `price: null`
+ * (the item is still real, for the Pantry, even if we don't know its cost).
  *
  * @param {unknown} raw
  * @param {string[]} categories  Allowed category strings.
- * @returns {{ store: string, items: {name: string, qty: string, category: string}[] }}
+ * @returns {{ store: string, date: string, items: {name: string, qty: string, category: string|null, price: number|null}[] }}
  */
 function coerceReceipt(raw, categories) {
   const obj = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
@@ -95,12 +107,13 @@ function coerceReceipt(raw, categories) {
   const items = [];
 
   for (const entry of rawItems) {
-    let name = '', qty = '', category = '';
+    let name = '', qty = '', category = '', rawPrice;
 
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
       name     = str(entry.name);
       qty      = str(entry.qty);
       category = str(entry.category);
+      rawPrice = entry.price;
     } else if (typeof entry === 'string') {
       // Tolerate a plain string line — treat it all as the name.
       name = entry.trim();
@@ -119,10 +132,20 @@ function coerceReceipt(raw, categories) {
       // null signals "the model gave us nothing usable" — the caller falls back
       // to the server's own keyword guess rather than dumping it in "Other".
       category: catMap.get(category.toLowerCase()) ?? null,
+      // Reuse the same sanity-checked coercion the AI price-estimate path
+      // trusts before writing to price_book — drop anything unreadable/
+      // out-of-range to `null` rather than defaulting it to a fake $0.00.
+      price: coercePrice(rawPrice),
     });
   }
 
-  return { store: str(obj.store), items };
+  // Purchase date: only accept a clean YYYY-MM-DD; anything else (blank,
+  // garbled OCR) becomes "" so the caller falls back to the scan time rather
+  // than trusting a malformed date string.
+  const rawDate = str(obj.date);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : '';
+
+  return { store: str(obj.store), date, items };
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +158,7 @@ function coerceReceipt(raw, categories) {
  * @param {string} filePath    Absolute path to the receipt image.
  * @param {string} mimeType    Image MIME type, e.g. 'image/jpeg'.
  * @param {string[]} categories Pantry category list the model must choose from.
- * @returns {Promise<{ store: string, items: {name: string, qty: string, category: string|null}[] }>}
+ * @returns {Promise<{ store: string, date: string, items: {name: string, qty: string, category: string|null, price: number|null}[] }>}
  */
 export async function extractReceipt(filePath, mimeType, categories = []) {
   // ── Guard: API key ────────────────────────────────────────────────────────

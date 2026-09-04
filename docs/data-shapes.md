@@ -179,7 +179,7 @@ goes stale (30 days), the store/ZIP changes, or the item's `qty` changes.
 | `qty_priced` | `string` | `TEXT NOT NULL DEFAULT ''`  | The qty Gemini says it actually priced — its own assumption when `qty_key` was blank, otherwise an echo of `qty_key`. **Display-only provenance — never part of the key or the lookup.** |
 | `unit_price` | `number` | `REAL NOT NULL`             | USD price for buying `qty_key`/`qty_priced` of this item — **not** a per-unit rate; no arithmetic is ever done on quantities. |
 | `currency`   | `string` | `TEXT NOT NULL DEFAULT 'USD'` | USD only, currently. |
-| `source`     | `'ai'` \| `'manual'` | `TEXT NOT NULL DEFAULT 'ai'` | `'ai'` — priced by `POST /api/shopping-list/estimate`. `'manual'` — set by the user via `PUT /api/shopping-list/:id/price`. Added 2026-09-03; every pre-existing row backfills to `'ai'` (correct — manual prices did not exist before this column). |
+| `source`     | `'ai'` \| `'manual'` | `TEXT NOT NULL DEFAULT 'ai'` | `'ai'` — priced by `POST /api/shopping-list/estimate`. `'manual'` — set by the user via `PUT /api/shopping-list/:id/price`. Added 2026-09-03; every pre-existing row backfills to `'ai'` (correct — manual prices did not exist before this column). **Never `'receipt'`** — receipt-sourced prices live in the separate `receipt_prices` table (§4f), not as a third value here; the API-level `source: "receipt"` seen in responses is synthesized at lookup time by preferring a `receipt_prices` observation over this table, never written into this column. |
 | `updated_at` | `string` (ISO 8601) | `TEXT NOT NULL`   | |
 
 ```sql
@@ -314,10 +314,12 @@ full field-by-field description; shape only, here:
 the server never filters on `checked`; whether checked items count toward a
 displayed total is a client-side decision only.
 
-`items[].source` is always `"ai"` or `null` in this response — never
+`items[].source` is `"receipt"`, `"ai"`, or `null` in this response — never
 `"manual"`. Any row that had a manual price is treated as a miss and
 re-priced this press (see §4b), so by the time this response is built, every
-non-null price it carries was just written (or already existed) as `"ai"`.
+non-null price it carries either came from a `receipt_prices` observation
+(§4f — checked before, and excluded from, the Gemini batch) or was just
+written/already existed as `"ai"`.
 
 ---
 
@@ -374,7 +376,9 @@ read of an unconfigured app is a normal empty state.
 Here, unlike §4c, `items[].source` can legitimately be `"manual"` — this
 route hydrates whatever is in `price_book` as-is, with no re-pricing, so a
 manual price is returned exactly as stored until the next `POST /estimate`
-overwrites it.
+overwrites it. `items[].source` can also be `"receipt"` (§4f) — checked
+**before** `price_book`, so a receipt observation is returned even if a
+now-stale AI price also exists in `price_book` for the same item.
 
 ---
 
@@ -395,6 +399,108 @@ There is no single-item response shape for this endpoint — the client is
 expected to replace its entire price snapshot from this response rather than
 patch one entry. See `docs/api.md` §5 for the full field list, validation
 rules, and error codes.
+
+---
+
+## 4f. Receipt prices (append-only observation log)
+
+Stored in a `receipt_prices` table. Written by `POST /api/pantry/receipt` —
+one row per scanned item whose price was readable, recorded immediately as
+part of that same scan (not gated on the Pantry review/bulk-add step). Read
+by `GET /api/shopping-list/prices` and `POST /api/shopping-list/estimate`,
+which both check it **before** the `price_book` AI cache (§4b) — see
+`docs/decisions.md` "2026-09-03 — Receipts build the price database."
+
+**This is deliberately NOT a cache.** `price_book` rows are meant to be
+overwritten and to expire; a receipt line is real money the user spent and
+must never be clobbered by a cache write. So this table is only ever
+`INSERT`ed into by this feature — never upserted, never `UPDATE`d, never
+`DELETE`d. Scanning the same receipt twice adds two observations, not one.
+
+| Field          | JS type  | SQLite column type | Notes |
+|----------------|----------|---------------------|-------|
+| `id`           | `string` (UUID v4) | `TEXT PRIMARY KEY` | |
+| `store`        | `string` | `TEXT NOT NULL`     | Normalized (`normalizeStore`) — the store printed on the receipt when legible, else the configured `shopping.store` setting. |
+| `zip`          | `string` | `TEXT NOT NULL DEFAULT ''` | Normalized (`normalizeZip`) — always the configured `shopping.zip` setting (receipts essentially never print one). `''`, never `NULL`. |
+| `name_key`     | `string` | `TEXT NOT NULL`     | Normalized (`normalizeName`) — same normalization as `price_book.name_key`, so a shopping-list row and a receipt line match only on identical normalized text. **No fuzzy matching** — a wrong match is worse than no match; known follow-up, not built. |
+| `name`         | `string` | `TEXT NOT NULL`     | The item name as read off the receipt (display only). |
+| `qty_text`     | `string` | `TEXT NOT NULL DEFAULT ''` | The qty/weight as printed on the receipt, e.g. `"1.87 lb"`. |
+| `base_amount`  | `number` | `REAL NOT NULL DEFAULT 0` | `parseRequired(qty_text).base` (`server/storeQty.js`) — a canonical magnitude (oz for weight, fl oz for volume, a plain count for clove/count). `0` when `qty_text` doesn't parse to a usable amount. |
+| `dim`          | `'volume'` \| `'weight'` \| `'clove'` \| `'count'` | `TEXT NOT NULL DEFAULT ''` | `parseRequired(qty_text).dim`. |
+| `total_price`  | `number` | `REAL NOT NULL`     | USD actually paid for `qty_text` of this item, as read off the receipt (already validated/rounded via `coercePrice`). |
+| `unit_price`   | `number` \| `null` | `REAL`     | `total_price / base_amount` when `base_amount > 0`, else `NULL`. This is a rate in the row's own canonical unit (per oz, per fl oz, per count/clove) — **not** rounded, so scaling stays accurate; see below. |
+| `purchased_at` | `string` (ISO date or ISO 8601) | `TEXT NOT NULL` | The receipt's own printed purchase date (`YYYY-MM-DD`) when the model could read it, else the time of the scan (full ISO 8601). This is what "most recent wins" sorts on. |
+| `created_at`   | `string` (ISO 8601) | `TEXT NOT NULL` | When this observation row was inserted — a tiebreak for `purchased_at`, and useful if `purchased_at` is ever backfilled/corrected later. |
+
+```sql
+CREATE INDEX IF NOT EXISTS receipt_prices_lookup
+  ON receipt_prices (store, zip, name_key, purchased_at);
+```
+
+Not a unique index — this table allows, and expects, multiple rows for the
+same `(store, zip, name_key)`.
+
+**Lookup: most recent wins.**
+```sql
+SELECT * FROM receipt_prices
+WHERE store = ? AND zip = ? AND name_key = ?
+ORDER BY purchased_at DESC, created_at DESC
+LIMIT 1
+```
+Never an average — averaging a sale price with a normal one produces a
+number that was never actually true.
+
+**Scaling to a shopping-list row's own `qty`.** Reuses `parseRequired()` (and,
+for the `count` case below, `parseQty()` via the new `isBareCount()` export)
+from `server/storeQty.js` — no second unit parser. Given a receipt
+observation `obs` and a shopping-list row's `qty` string:
+
+1. Parse the list row's `qty` the same way: `parseRequired(qty)` → `{ base, dim }`.
+2. **Scalable** iff `obs.dim === listDim`, `obs.dim` is one of `weight` /
+   `volume` / `clove` / `count` (`count` carries an extra bare-count test —
+   see below), `obs.base_amount > 0`, `listBase > 0`, and `obs.unit_price` is
+   a number. When scalable: `price = Math.round((obs.unit_price * listBase) *
+   100) / 100` — **rounded** to the cent, the same convention `coercePrice`
+   (`extract/price.js`) uses for every other price in this app — and
+   `qty_priced` is `null` (the full requested qty was priced exactly). No
+   epsilon guard: verified that an exact-quantity match (receipt `qty` ===
+   list `qty`) reproduces the observed `total_price` to the cent under plain
+   rounding, so one isn't needed.
+   - Worked example (weight): `obs = { qty_text: "1.87 lb", base_amount: 29.92 (oz), total_price: 8.41 }`
+     (so `unit_price ≈ 0.28108/oz`), a list row asking `"1.5 lb"` (`listBase = 24 oz`)
+     scales to `0.28108 * 24 = 6.7460 → round → $6.75`.
+   - Worked example (bare count): `obs = { qty_text: "12", base_amount: 12, total_price: 3.60 }`
+     (so `unit_price = $0.30/egg`), a list row asking `"6"` (`listBase = 6`)
+     scales to `0.30 * 6 = $1.80`.
+3. **Unscalable** (dims differ, either quantity fails to parse, `obs.dim ===
+   'count'` and either side is NOT a bare count) → `price = obs.total_price`,
+   `qty_priced = obs.qty_text || null`. The API renders this as "priced as …".
+
+**`count` needs an extra test that the other three dimensions don't.**
+`parseRequired()` returns `dim: 'count'` both for a genuine count ("12 eggs")
+*and*, as its fallback, for any quantity with no recognized unit at all —
+which includes container words like `"1 bag"` or `"1 jar"`. Scaling "1 bag"
+as if `"bag"` were a fixed-size unit would silently misprice a
+differently-sized bag, but refusing to scale `count` altogether would also
+throw away a lot of a real grocery list (eggs, tortillas, cans, lemons — any
+item bought and requested by a plain number). So `count` scales only when
+**both** the receipt's and the list's quantity are a **bare numeric count** —
+a plain number with no unit word at all (`"12"`, `"6"`), per the new
+`isBareCount()` export in `server/storeQty.js`, which reuses the existing
+`parseQty()` rather than adding a new parser. A container noun on either
+side (`"1 bag"` vs. `"2 bags"`, or even `"1 bag"` vs. `"1 bag"`) always falls
+back to the unscalable branch — deliberately conservative, since a wrong
+scale is worse than no scale. Weight, volume, and clove amounts need no such
+test: `parseRequired()` never uses them as an unrecognized-unit fallback, so
+they're unambiguous whenever they appear.
+
+**Recording (`POST /api/pantry/receipt`).** For every item the receipt
+extraction returns with a non-null `price`: `name_key = normalizeName(name)`,
+`{ base, dim } = parseRequired(qty)`, `unit_price = base > 0 ? price / base :
+null`, and one row is inserted. Items with an unreadable price (`price:
+null`) get no row — there's nothing to observe — but are still returned to
+the Pantry review UI. See `docs/api.md` §7 for the full attribution rules
+(store/ZIP/date fallbacks).
 
 ---
 

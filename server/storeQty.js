@@ -213,6 +213,28 @@ export function parseRequired(qty) {
 }
 
 /**
+ * Whether a quantity string is a BARE numeric count — a plain number with NO
+ * unit word at all ("12", "6", "1/2"), as opposed to a number qualified by a
+ * container/measure word ("1 bag", "2 heads", "3 cloves", "1 dozen"). Reuses
+ * the same parseQty() every other helper here does — no second parser.
+ *
+ * This distinction matters for receipt-price scaling (server/index.js):
+ * parseRequired() reports dim: 'count' both for a genuine count ("12 eggs")
+ * AND, as its fallback, for any quantity it doesn't recognize a unit for —
+ * which includes container words. "12 eggs" -> "6 eggs" is a real doubling
+ * of a fixed-size item, safe to scale; "1 bag" -> "2 bags" is not, because a
+ * bag's size isn't fixed. Only a bare count on BOTH sides of a comparison is
+ * safe to scale; a container word on either side must fall back instead.
+ *
+ * @param {string} qty
+ * @returns {boolean}
+ */
+export function isBareCount(qty) {
+  const { amount, unit } = parseQty(String(qty ?? ''));
+  return amount != null && unit.trim() === '';
+}
+
+/**
  * The store unit an ingredient is bought in, with the capacity of one unit in
  * the matching canonical base. Returns null for "fixed" items we never bump.
  */

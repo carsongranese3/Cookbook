@@ -291,4 +291,41 @@ db.exec(`
     ON price_book (store, zip, name_key, qty_key);
 `);
 
+// ---------------------------------------------------------------------------
+// Receipt prices — an APPEND-ONLY observation log of what was actually paid,
+// captured from Pantry receipt scans (POST /api/pantry/receipt). This is
+// deliberately NOT the price_book cache: price_book rows are meant to be
+// overwritten/expired, but a receipt line is real money the user spent and
+// must never be clobbered by a cache write. See docs/decisions.md
+// "2026-09-03 — Receipts build the price database".
+//
+// Multiple observations of the same (store, zip, name_key) are expected —
+// re-scanning a receipt, or buying the same thing on different trips, each
+// add a row. Lookup always takes the MOST RECENT observation (by
+// purchased_at, then created_at as a tiebreak) — never an average.
+// ---------------------------------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS receipt_prices (
+    id           TEXT PRIMARY KEY,
+    store        TEXT NOT NULL,             -- normalized store string (see normalizeStore)
+    zip          TEXT NOT NULL DEFAULT '',  -- '' when no ZIP, never NULL
+    name_key     TEXT NOT NULL,             -- normalized item name (see normalizeName)
+    name         TEXT NOT NULL,             -- the item name as read off the receipt (display only)
+    qty_text     TEXT NOT NULL DEFAULT '',  -- the qty/weight as printed, e.g. "1.87 lb"
+    base_amount  REAL NOT NULL DEFAULT 0,   -- parseRequired(qty_text).base — 0 when unparseable
+    dim          TEXT NOT NULL DEFAULT '',  -- parseRequired(qty_text).dim: volume|weight|clove|count
+    total_price  REAL NOT NULL,             -- USD actually paid for qty_text of this item
+    unit_price   REAL,                      -- total_price / base_amount; NULL when base_amount is 0
+    purchased_at TEXT NOT NULL,             -- receipt date if readable, else the scan time (ISO 8601)
+    created_at   TEXT NOT NULL              -- when this observation was recorded (ISO 8601)
+  );
+`);
+
+// Lookup is always "most recent observation for this (store, zip, name_key)".
+db.exec(`
+  CREATE INDEX IF NOT EXISTS receipt_prices_lookup
+    ON receipt_prices (store, zip, name_key, purchased_at);
+`);
+
 export default db;

@@ -657,9 +657,74 @@ Remove all checked items.
 ### Price estimation
 
 Price estimation is an **AI estimate from Gemini**, never a real quote or a
-live store price. It requires a persisted store choice, and results are
-cached server-side in a `price_book` table (30-day staleness) so repeat
-presses on an unchanged list cost zero Gemini calls.
+live store price — **unless a real price is available**, in which case that
+always wins. It requires a persisted store choice, and results are cached
+server-side in a `price_book` table (30-day staleness) so repeat presses on
+an unchanged list cost zero Gemini calls.
+
+**Lookup precedence, applied identically by `GET /api/shopping-list/prices`
+and `POST /api/shopping-list/estimate`: manual → receipt → AI → unpriced.**
+
+1. A `price_book` row with `source: "manual"` (§ `PUT /:id/price` below) wins
+   outright — the user typed it in themselves.
+2. Otherwise, the most recent observation in `receipt_prices` — an
+   append-only log of what was actually paid, built by `POST
+   /api/pantry/receipt` (§7) — wins. This is real money the user spent, so it
+   beats a Gemini guess. See "Receipt prices" below for how it's scaled to
+   the list row's own quantity.
+3. Otherwise, the `price_book` AI cache, exactly as before.
+
+**Items with a receipt price never reach Gemini at all** — `POST /estimate`
+excludes them from the batch entirely, which is the actual payoff of the
+receipt-price feature: as receipts accumulate, a press costs less (and
+eventually nothing) for a regular shop. See `docs/decisions.md`, "2026-09-03
+— Receipts build the price database."
+
+#### Receipt prices — how a `receipt_prices` observation becomes a price
+
+`receipt_prices` is a separate, **append-only observation log** — never a
+cache, never upserted, never overwritten by this feature. Full column
+reference: `docs/data-shapes.md` § Receipt prices.
+
+- **Matching is exact on the normalized item name only** (`name_key`, same
+  normalization as `price_book`). No fuzzy matching — a wrong match would
+  attach a real price to the wrong food, which is worse than no match. Known
+  follow-up, not implemented.
+- **Most recent observation wins** when the same item has been bought more
+  than once (ordered by `purchased_at`, then `created_at` as a tiebreak) —
+  never an average. A sale price and a normal price blended together would
+  produce a number that was never actually true.
+- **Scaling.** When the receipt's quantity and the shopping-list row's own
+  `qty` both parse (via `parseRequired()` in `server/storeQty.js`) to the
+  **same dimension** — `weight`, `volume`, `clove`, or a **bare** `count`
+  (see below) — the price scales: `(observation's total_price /
+  observation's base_amount) * the list row's own base_amount`, rounded to
+  the cent (same `Math.round` convention as every other price in this app —
+  no epsilon guard needed; an exact-quantity match reproduces the observed
+  total to the cent). Examples: a receipt line of `1.87 lb` for `$8.41` and a
+  list row asking `1.5 lb` shows **`$6.75`**; a receipt line of `12` eggs for
+  `$3.60` and a list row asking `6` shows **`$1.80`**. `qty_priced` is `null`
+  in the scaled case — the full requested qty was priced exactly, so there's
+  nothing to caveat.
+- **Unscalable → fall back to the observation as a whole.** This happens
+  when the dimensions differ, either quantity fails to parse (e.g. blank), or
+  the dimension is `count` and **either side is not a bare number** (no unit
+  word at all). `parseRequired()` also returns `count` for a quantity with no
+  recognized unit at all, which includes container words like `1 bag` or `1
+  jar` — a "bag" is not a fixed size, so scaling `1 bag` → `2 bags` as a
+  literal doubling would silently misprice a differently-sized bag. A plain
+  count like `12 eggs` → `6 eggs` IS safe to scale (see above); only the
+  container case is excluded, via a bare-count check (`isBareCount()`,
+  `server/storeQty.js`) rather than banning `count` outright. In the
+  fallback case, `price` is the observation's own `total_price` and
+  `qty_priced` is its `qty_text` — the UI already renders this as "priced
+  as …".
+- **Precedence interacts with manual prices exactly as before, with one
+  addition**: a `price_book` row with `source: "manual"` is *still* an
+  unconditional miss on `POST /estimate` (re-priced by Gemini every press,
+  regardless of any receipt observation) — but once that press flips it back
+  to `source: "ai"`, the (untouched) receipt observation becomes the display
+  winner again on the very next read, per the precedence order above.
 
 #### `GET /api/shopping-list/store`
 
@@ -752,6 +817,16 @@ does not block or get blocked by this route, and this route never writes to
       "updated_at": "2026-09-03T02:21:58.585Z"
     },
     {
+      "id":         "9a10-…",
+      "name":       "Boneless skinless chicken breast",
+      "qty":        "1.5 lb",
+      "checked":    false,
+      "qty_priced": null,
+      "price":      6.75,
+      "source":     "receipt",
+      "updated_at": "2026-08-20"
+    },
+    {
       "id":         "2ab7-…",
       "name":       "Saffron threads",
       "qty":        "1 pack",
@@ -762,9 +837,9 @@ does not block or get blocked by this route, and this route never writes to
       "updated_at": null
     }
   ],
-  "total":            1.38,
-  "total_unchecked":  1.38,
-  "priced_count":     1,
+  "total":            8.13,
+  "total_unchecked":  8.13,
+  "priced_count":     2,
   "unpriced_count":   1
 }
 ```
@@ -776,15 +851,19 @@ sums the client is free to recompute from live checked state) — this
 response is that same shape **minus `gemini_calls`** (nothing was ever
 computed) and minus the per-item `cached` flag (meaningless here — nothing
 was freshly priced this request, so every non-null price is definitionally
-from the cache). An item with no cached entry comes back `price: null`,
-`source: null`, and counts toward `unpriced_count`, exactly like an unpriced
-item from the estimate endpoint.
+from the cache or a receipt). An item with no cached entry and no receipt
+observation comes back `price: null`, `source: null`, and counts toward
+`unpriced_count`, exactly like an unpriced item from the estimate endpoint.
 
-`items[].source` is `"ai"` when the price came from a Gemini estimate,
-`"manual"` when the user typed it in via `PUT /api/shopping-list/:id/price`,
-or `null` when the item is unpriced. The client uses this to mark manual
-prices visually, because the total block's "AI estimate — not a real price"
-disclaimer is false for a number the user typed themselves.
+`items[].source` is `"manual"` when the user typed it in via `PUT
+/api/shopping-list/:id/price`, `"receipt"` when it came from a
+`receipt_prices` observation (see "Price estimation" above for the
+precedence and scaling rules), `"ai"` when it came from a Gemini estimate, or
+`null` when the item is unpriced. The client uses this to mark manual and
+receipt prices visually, because the total block's "AI estimate — not a real
+price" disclaimer is false for both. For a receipt-sourced item,
+`updated_at` is the observation's `purchased_at` (the receipt's own date
+when readable, else the scan time), not a `price_book` cache timestamp.
 
 **The 30-day staleness window that `POST /estimate` enforces does NOT apply
 here — this is deliberate, not an oversight.** `POST /estimate` treats an
@@ -860,13 +939,15 @@ Field notes:
   unpriced.
 - `items[].price` — USD, a plain number rounded to 2 decimals, or `null`
   when the item could not be priced.
-- `items[].cached` — `true` when the price came from `price_book` with no
-  Gemini call this press.
-- `items[].source` — `"ai"` for a price this endpoint just wrote or already
-  had cached from Gemini, `null` when the item is unpriced. **Never
-  `"manual"` in this response** — see "Manual prices" below: a manual price
-  is always re-priced by this endpoint, so any row this endpoint returns
-  with a non-null `price` is, by construction, `"ai"`.
+- `items[].cached` — `true` when the price came from `price_book` or
+  `receipt_prices` with no Gemini call this press for that item.
+- `items[].source` — `"receipt"` when a `receipt_prices` observation priced
+  the item (see "Price estimation" above), `"ai"` for a price this endpoint
+  just wrote or already had cached from Gemini, or `null` when the item is
+  unpriced. **Never `"manual"` in this response** — see "Manual prices"
+  below: a manual price is always re-priced by this endpoint, so any row
+  this endpoint returns with a non-null `price` is, by construction,
+  `"receipt"` or `"ai"`.
 - `total` — sum of all non-null `price` values (a reference figure; the
   client recomputes the number it displays from its own checked state).
 - `total_unchecked` — the same sum restricted to rows that were unchecked at
@@ -875,6 +956,17 @@ Field notes:
   ones; `priced_count + unpriced_count` always equals `items.length`.
 - `gemini_calls` — how many Gemini requests this press made. `0` on a fully
   cached press — the key acceptance property of this endpoint.
+
+**Receipt prices are checked BEFORE the AI cache and are excluded from the
+Gemini batch entirely** — the whole reason the feature exists. Per item, the
+precedence used to decide hit/miss for this endpoint is: a `source: "manual"`
+`price_book` row is always a miss (see below); otherwise a `receipt_prices`
+observation, if one exists, is always a hit (`cached: true`, `source:
+"receipt"`) and that item is never added to the Gemini prompt — not gated on
+`refresh`, since a receipt observation is a record of real money spent, not a
+re-askable estimate; otherwise the normal AI cache hit/miss check (30-day
+staleness, `refresh`) applies. A press whose only misses are receipt-priced
+items returns `gemini_calls: 0`.
 
 **Manual prices are always overwritten, literally.** A `price_book` row with
 `source: "manual"` (set via `PUT /api/shopping-list/:id/price`) is treated as
@@ -1314,7 +1406,9 @@ De-duped by case-insensitive name (same logic as `POST /api/shopping-list/from-r
 
 ### `POST /api/pantry/receipt`
 
-AI receipt import, step 1 of 2. Reads a photo of a grocery receipt with Gemini and returns the grocery items on it as a **draft** — **nothing is persisted**. The frontend shows the list for review, then sends the keepers to `POST /api/pantry/bulk`.
+AI receipt import, step 1 of 2. Reads a photo of a grocery receipt with Gemini and returns the grocery items on it as a **draft** for the Pantry — **the Pantry side is not persisted here**. The frontend shows the list for review, then sends the keepers to `POST /api/pantry/bulk`.
+
+**This same scan also builds the price database.** Immediately, as part of this request (not gated on the Pantry review/bulk-add step, and not a second upload), the server records one append-only `receipt_prices` observation per item whose price was readable — see `docs/decisions.md`, "2026-09-03 — Receipts build the price database." Those observations are what `GET /api/shopping-list/prices` and `POST /api/shopping-list/estimate` read (§5, "Price estimation").
 
 Runs server-side only; the Gemini API key is never exposed to the browser. Unlike video extraction this sends the image **inline** rather than through the Gemini Files API.
 
@@ -1325,20 +1419,31 @@ The model is instructed to:
 - expand receipt abbreviations into plain names (`GV WHL MLK GAL` → `Whole milk`),
 - skip every non-grocery line (subtotal, tax, total, payment, loyalty, bag fees) **and** non-food goods (cleaning supplies, paper goods, toiletries, pet, pharmacy),
 - report the amount purchased in `qty`, converting any metric amount to imperial,
+- report what was actually **paid** for that line in `price` (a plain USD number, `null` when genuinely unreadable — never a guess),
+- read the receipt's own **purchase date**, when legible, as `date`,
 - pick a `category` from the fixed pantry list.
 
 **Response 200:**
 ```json
 {
   "store": "Fresh Market",
+  "date":  "2026-08-25",
   "items": [
-    { "name": "Whole milk", "qty": "1 gal", "category": "Dairy & Eggs" },
-    { "name": "Boneless skinless chicken breast", "qty": "1.87 lb", "category": "Meat & Seafood" }
+    { "name": "Whole milk", "qty": "1 gal", "category": "Dairy & Eggs", "price": 4.29 },
+    { "name": "Boneless skinless chicken breast", "qty": "1.87 lb", "category": "Meat & Seafood", "price": 8.41 },
+    { "name": "Loose bagel", "qty": "", "category": "Bakery", "price": null }
   ]
 }
 ```
 
-`store` is `""` when the store name is unreadable. `category` is always one of the fixed categories — when the model returns nothing usable, the server falls back to its own keyword guess (the same `guessCategory` used by `POST /api/shopping-list/from-recipe/:id`).
+`store` is `""` when the store name is unreadable. `date` is `null` when the receipt's purchase date is unreadable (the price observations below still get recorded — see "Price attribution" below). `category` is always one of the fixed categories — when the model returns nothing usable, the server falls back to its own keyword guess (the same `guessCategory` used by `POST /api/shopping-list/from-recipe/:id`). `price` is a plain USD number rounded to 2 decimals, or `null` when that line's price couldn't be read — **an unreadable price never drops the item itself**, it still comes back for Pantry review with `price: null`.
+
+**Price attribution (recorded server-side, not part of what the frontend needs to send back).** For every item with a non-null `price`, one row is inserted into `receipt_prices`:
+- **Store**: the store name printed on the receipt when legible, else the app's configured shopping store (`GET /api/shopping-list/store`). If neither is available, nothing is recorded for this scan (no error — the Pantry review still proceeds).
+- **ZIP**: always the app's configured `shopping.zip` (receipts essentially never print one).
+- **`purchased_at`**: the receipt's own `date` when readable, else the time of this scan.
+- **`base_amount` / `dim`**: `parseRequired(qty)` from `server/storeQty.js` — `dim` ∈ `volume | weight | clove | count`, `base_amount` is `0` when `qty` doesn't parse to a usable amount.
+- **`unit_price`**: `price / base_amount` when `base_amount > 0`, else `null`.
 
 **Errors** — same `{ error, code }` shape and code→status mapping as §8 AI Extract:
 
