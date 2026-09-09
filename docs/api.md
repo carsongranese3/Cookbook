@@ -1417,11 +1417,16 @@ Accepted types: JPEG, PNG, WebP, HEIC/HEIF. **Max 12 MB.**
 
 The model is instructed to:
 - expand receipt abbreviations into plain names (`GV WHL MLK GAL` → `Whole milk`),
+- report the **generic product**, not the branded one — strip store brands (`H-E-B`, `GV`/Great Value, Kirkland, `365`) and national brands (`Heinz`, `Kraft`, `Barilla`, ...) from `name` (`H-E-B Onion Powder` → `Onion powder`; `Kirkland EVOO` → `Extra virgin olive oil`), **except** when the brand IS the common name a person would actually put on a shopping list (`Cheerios` stays `Cheerios`),
+- strip the package size out of `name` too — it belongs in `qty` (`GV Garlic Minced 3oz` → name `Minced garlic`, `qty: "3 oz"`, not `Minced garlic 3oz`),
+- keep descriptive attributes that identify the food itself (cut, fat content, roast level, etc.) — only the brand and the package size come out (`Boneless skinless chicken breast`, `Sharp cheddar cheese`, `Low sodium chicken broth` are unaffected),
 - skip every non-grocery line (subtotal, tax, total, payment, loyalty, bag fees) **and** non-food goods (cleaning supplies, paper goods, toiletries, pet, pharmacy),
 - report the amount purchased in `qty`, converting any metric amount to imperial,
 - report what was actually **paid** for that line in `price` (a plain USD number, `null` when genuinely unreadable — never a guess),
 - read the receipt's own **purchase date**, when legible, as `date`,
 - pick a `category` from the fixed pantry list.
+
+**Applies to new scans only** (added 2026-09-03, see `docs/decisions.md`). Existing Pantry rows and `receipt_prices` observations saved before this change keep their old (possibly branded/sized) names — this is a prompt change, not a backfill.
 
 **Response 200:**
 ```json

@@ -2157,6 +2157,45 @@ a:hover { color: var(--accent-dark); }
   .cook-next-btn { flex: 1; height: 50px; border-radius: 13px; justify-content: center; font-size: 15px; }
 }
 
+/* Wraps rewind + Next so `justify-content: space-between` on `.cook-footer`
+   treats them as one unit pinned to the right edge — Next must not shift
+   when rewind is hidden (no usable timestamp for the current step). */
+.cook-next-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cook-rewind-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  border: none;
+  flex: none;
+  transition: color 0.12s, background 0.12s;
+}
+
+.cook-rewind-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.16); }
+
+@media (max-width: 767px) {
+  /* `.cook-next-btn` keeps its own `flex: 1` (below) to fill the footer's
+     remaining space; the group itself must also grow, or that space is
+     never handed down to it. */
+  .cook-next-group { flex: 1; gap: 8px; }
+
+  .cook-rewind-btn {
+    width: 50px;
+    height: 50px;
+    border-radius: 13px;
+  }
+}
+
 /* ── Cooking Mode: video pane (desktop two-pane, phone stacked) ──────────── */
 .cook-main {
   flex: 1;

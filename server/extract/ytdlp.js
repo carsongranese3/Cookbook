@@ -129,6 +129,11 @@ function spawnYtdlp(args, { timeoutMs = 120_000 } = {}) {
           new ExtractError(
             CODES.FETCH_FAILED,
             `yt-dlp exited ${code}: ${stderr.slice(0, 500)}`,
+            undefined,
+            // Untruncated stderr: the identifying line for the impersonation
+            // fallback (e.g. "Impersonate target ... is not available") can
+            // sit well past 500 chars in a long Python traceback.
+            `yt-dlp exited ${code}: ${stderr}`,
           ),
         );
       }
@@ -167,7 +172,12 @@ async function runYtdlp(args, opts = {}) {
   try {
     return await spawnYtdlp(impersonatedArgs, opts);
   } catch (err) {
-    if (err instanceof ExtractError && isImpersonationUnavailable(err.message)) {
+    // Match against the untruncated stderr (`fullDetail`) — the 500-char
+    // `err.message` slice can cut off before the identifying line in a long
+    // Python traceback. Fall back to `err.message` for non-ExtractError or
+    // errors without fullDetail (defensive; shouldn't normally happen here).
+    const haystack = err instanceof ExtractError ? (err.fullDetail || err.message) : '';
+    if (err instanceof ExtractError && isImpersonationUnavailable(haystack)) {
       console.warn('[ytdlp] --impersonate chrome unavailable, retrying without impersonation:', err.message);
       return spawnYtdlp(args, opts);
     }

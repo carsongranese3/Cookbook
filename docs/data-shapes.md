@@ -417,6 +417,17 @@ must never be clobbered by a cache write. So this table is only ever
 `INSERT`ed into by this feature — never upserted, never `UPDATE`d, never
 `DELETE`d. Scanning the same receipt twice adds two observations, not one.
 
+**`name` / `name_key` are the generic product, not the branded one** (added
+2026-09-03, see `docs/decisions.md` "Receipt item names are generic
+products"). The receipt-reading prompt strips store and national brands and
+package sizes from `name` before it ever reaches this table — `H-E-B Onion
+Powder` is recorded as `Onion powder` — except when the brand IS the common
+name for the item (`Cheerios` stays `Cheerios`). This is what lets `name_key`
+line up with a shopping-list item typed as "onion powder" under the exact-match
+rule above. **Applies to rows inserted after this change only** — observations
+recorded before it keep whatever (possibly branded/sized) name the model
+returned at the time; they are not rewritten.
+
 | Field          | JS type  | SQLite column type | Notes |
 |----------------|----------|---------------------|-------|
 | `id`           | `string` (UUID v4) | `TEXT PRIMARY KEY` | |

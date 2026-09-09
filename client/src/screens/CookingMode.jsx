@@ -23,6 +23,7 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
   const stepTimes = Array.isArray(recipe?.step_times) ? recipe.step_times : [];
   const [stepIndex, setStepIndex] = useState(0);
   const [videoError, setVideoError] = useState(false);
+  const [rewindTick, setRewindTick] = useState(0);
   const videoRef = useRef(null);
 
   const hasVideo = !!recipe?.has_video && !videoError;
@@ -127,7 +128,21 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
       video.removeEventListener('loadedmetadata', seekAndPlay);
       video.removeEventListener('timeupdate', handleTimeUpdate);
     };
-  }, [stepIndex, hasVideo, steps.length, seekTargets, boundaries]);
+    // `rewindTick` is bumped by the rewind button, not by anything the user
+    // navigates to — including it here re-runs this effect on demand, which
+    // re-seeks/replays AND resets `pausedForThisStep` above, re-arming the
+    // step's auto-pause without a rewind-specific latch of its own.
+  }, [stepIndex, hasVideo, steps.length, seekTargets, boundaries, rewindTick]);
+
+  // Rewind = "show me this step's segment again". Reuses the effect above
+  // (via `rewindTick`) rather than duplicating the seek/play/auto-pause logic.
+  function handleRewind() {
+    setRewindTick((t) => t + 1);
+  }
+
+  // Same gate as `canSeek` inside the effect: no usable timestamp for this
+  // step means there's no breakpoint to rewind to.
+  const canRewind = hasVideo && seekTargets[stepIndex] !== null;
 
   // Edge case: 0 steps — unchanged from before, no video pane regardless.
   if (steps.length === 0) {
@@ -220,18 +235,34 @@ export default function CookingMode({ recipe, onExit, onFinish }) {
         ))}
       </div>
 
-      <button
-        className="cook-next-btn"
-        onClick={goNext}
-        aria-label={isLast ? 'Finish cooking' : 'Next step'}
-      >
-        {isLast ? 'Done' : 'Next'}
-        {!isLast && (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path d="M9 18l6-6-6-6"/>
-          </svg>
+      <div className="cook-next-group">
+        {canRewind && (
+          <button
+            type="button"
+            className="cook-rewind-btn"
+            onClick={handleRewind}
+            aria-label="Rewind to start of step"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+          </button>
         )}
-      </button>
+
+        <button
+          className="cook-next-btn"
+          onClick={goNext}
+          aria-label={isLast ? 'Finish cooking' : 'Next step'}
+        >
+          {isLast ? 'Done' : 'Next'}
+          {!isLast && (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M9 18l6-6-6-6"/>
+            </svg>
+          )}
+        </button>
+      </div>
     </div>
   );
 

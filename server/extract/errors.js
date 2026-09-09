@@ -33,11 +33,20 @@ export class ExtractError extends Error {
    * @param {keyof typeof CODES} code
    * @param {string} [detail]   Internal detail logged server-side only.
    * @param {string} [userMessage] Override the default friendly message.
+   * @param {string} [fullDetail]  Untruncated internal detail (e.g. raw stderr),
+   *   for callers that need to pattern-match on text a truncated `detail` may
+   *   have cut off. Not logged/displayed by default; attached non-enumerable
+   *   so it doesn't leak into JSON.stringify(err) or accidental logging.
    */
-  constructor(code, detail, userMessage) {
+  constructor(code, detail, userMessage, fullDetail) {
     super(detail ?? code);
     this.name = 'ExtractError';
     this.code = code;
     this.userMessage = userMessage ?? DEFAULT_MESSAGES[code] ?? 'An unexpected error occurred.';
+    Object.defineProperty(this, 'fullDetail', {
+      value: fullDetail ?? detail ?? '',
+      enumerable: false,
+      writable: false,
+    });
   }
 }

@@ -515,3 +515,76 @@ should both stock the Pantry and record prices.
 - **One scan does both.** The existing Pantry receipt import gains price capture; no second scan,
   no new screen. The receipt reader's prompt currently *tells the model to skip* price lines
   (`receipt.js:60`) — that instruction is what has to change.
+
+## 2026-09-03 — Receipt item names are generic products, brand stripped
+User: "When I take a photo of a receipt I want the main product to be saved, (not the brand). So if
+I get HEB onion powder I only want onion powder."
+
+- **Rule 1 of the receipt prompt gains brand-stripping**: the name recorded is the *product*, not the
+  label on it. `H-E-B Onion Powder` → `Onion powder`; `GV WHL MLK GAL` → `Whole milk` (already the
+  behavior for abbreviations, now explicit about the brand too).
+- **This is not cosmetic — it is the biggest available win for receipt→list matching.** Prices are
+  keyed on the normalized name, and matching is exact; a receipt reading "H-E-B Onion Powder" could
+  never match a list item called "onion powder", so the price would be recorded and then never
+  found. Stripping the brand makes the two sides agree by construction and closes much of the gap
+  that was otherwise going to need fuzzy matching.
+- **Package sizes come out of the name too** (`Garlic Minced 3oz` → `Minced garlic`). The size is
+  already carried in `qty`; leaving it in the name splits one product into several unmatchable keys.
+- **The exception: keep the brand when the brand IS the product's common name.** `Cheerios` must not
+  become `Toasted oat cereal` — nobody writes that on a shopping list. The test is what the user
+  would actually call it, not brand-removal for its own sake.
+- Applies to new scans only; existing Pantry rows and `receipt_prices` observations are untouched.
+  This changes both the Pantry item names and the price-database keys, since both come from the same
+  extraction.
+
+## 2026-09-07 — Cook Mode gets a rewind-to-step-start button
+User: "in cooking mode add a rewind button (like that circle symbol with an arrow) that takes the
+video back to the last breakpoint (essentially rewind the video that was on the current viewing
+page)."
+
+- **"Last breakpoint" means the start of the current step's video segment** — not a fixed -10s
+  jump, and not the previous step. Cook Mode already plays one per-recipe video seeked per step;
+  rewind returns to where the current step's segment began, so you can re-watch the step you are on.
+- **The target is `seekTargets[stepIndex]`, the existing `useMemo` in `CookingMode.jsx`** — NOT raw
+  `step_times[stepIndex]`. `step_times` carries a real ambiguity: `0` means "start of video" for
+  step 0 but "timestamp not identified" for any later step (`docs/data-shapes.md:52`).
+  `seekTargets` already resolves that and enforces non-decreasing order. Re-deriving from the raw
+  column would reintroduce a bug that is already solved.
+- **The button is hidden when `seekTargets[stepIndex]` is `null`.** That step has no usable
+  timestamp, so there is no breakpoint to return to — a visible control that silently does nothing
+  is worse than no control. Same gate as the existing `canSeek`.
+- **Rewind seeks *and* plays**, matching the existing `seekAndPlay()`. Pressing rewind means "show
+  me that again"; leaving it paused on the first frame would need a second tap to do the obvious
+  thing.
+- **Rewind must re-arm the step's auto-pause.** The auto-pause at `boundaries[stepIndex]` is
+  latched by an effect-local `pausedForThisStep` flag that is only reset when `stepIndex` changes.
+  Rewinding within a step does not change `stepIndex`, so without an explicit reset the second
+  pass would sail past the boundary into the next step's footage — the exact thing the boundary
+  exists to prevent. This is the one non-obvious correctness requirement in the feature.
+- **Placement: an overlay control on the video pane**, not a fourth button in the footer. The
+  footer is a strict three-slot `space-between` row (back / dots / next) and rewind is a
+  video-scoped action, not step navigation. Native `controls` occupy the bottom of the video, so
+  the overlay sits top-right.
+- Renders only inside the `hasVideo` branch; the no-video and `videoError` fallback layouts are
+  untouched.
+
+## 2026-09-08 — Rewind moves into the footer, left of Next
+User: "move it to the left of next."
+
+- **Supersedes the placement call in the 2026-09-07 entry above.** The rewind button leaves the
+  video pane overlay and becomes a footer control sitting immediately left of Next. Everything
+  else in that entry still stands: the target is still `seekTargets[stepIndex]`, it still hides
+  when that is `null`, it still seeks-and-plays, and it still must re-arm the step's auto-pause.
+- **The footer is `justify-content: space-between` across three children** (back / dots / next), so
+  a fourth child would get spread across the row rather than landing next to Next. Rewind and Next
+  are therefore wrapped in a right-aligned flex group — that keeps them adjacent and, because the
+  group is pinned to the footer's right edge, **Next does not shift** on steps where rewind is
+  hidden. A footer control that moves the primary action around under your thumb would be worse
+  than the overlay it replaced.
+- **The overlay's reason for existing goes with it**: `.cook-video-pane`'s `position: relative` was
+  added only to host the absolutely-positioned button and is reverted, along with the
+  padding-aware `calc()` offsets. Dead positioning left behind in a stylesheet is how the next
+  change acquires a mystery.
+- **It now styles as a footer button, not a chip over video** — the `rgba(255,255,255,.1)` idiom
+  of `.cook-back-btn`, not the bordered dark circle that existed to survive being over black
+  pillarboxing. That constraint no longer applies.
