@@ -416,6 +416,7 @@ export default function HistoryScreen({ onOpenRecipe, prefill, onPrefillHandled,
   const [error, setError]       = useState('');
   const [formEntry, setFormEntry] = useState(null);  // null=closed, {}=new, entry=edit
   const [formOpen, setFormOpen]   = useState(false);
+  const [formPrefill, setFormPrefill] = useState(null); // snapshot of prefill for the open form
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -439,7 +440,8 @@ export default function HistoryScreen({ onOpenRecipe, prefill, onPrefillHandled,
   // Handle prefill from Cook Mode finish
   useEffect(() => {
     if (prefill && !loading) {
-      setFormEntry(null);   // new entry
+      setFormEntry(null);     // new entry
+      setFormPrefill(prefill); // snapshot before App clears its copy
       setFormOpen(true);
       onPrefillHandled?.();
     }
@@ -447,17 +449,20 @@ export default function HistoryScreen({ onOpenRecipe, prefill, onPrefillHandled,
 
   function openAdd() {
     setFormEntry(null);
+    setFormPrefill(null);
     setFormOpen(true);
   }
 
   function openEdit(entry) {
     setFormEntry(entry);
+    setFormPrefill(null);
     setFormOpen(true);
   }
 
   function closeForm() {
     setFormOpen(false);
     setFormEntry(null);
+    setFormPrefill(null);
   }
 
   async function handleSave(id, body) {
@@ -486,7 +491,7 @@ export default function HistoryScreen({ onOpenRecipe, prefill, onPrefillHandled,
       {formOpen && (
         <EntryFormModal
           entry={formEntry}
-          prefill={formEntry ? null : prefill}
+          prefill={formEntry ? null : formPrefill}
           recipes={recipes}
           onSave={handleSave}
           onClose={closeForm}

@@ -588,3 +588,26 @@ User: "move it to the left of next."
 - **It now styles as a footer button, not a chip over video** — the `rgba(255,255,255,.1)` idiom
   of `.cook-back-btn`, not the bordered dark circle that existed to survive being over black
   pillarboxing. That constraint no longer applies.
+
+## 2026-09-15 — Cook-finish prefill was cleared before the modal could read it
+User: "after I cook something and the log a cook pops up auto make the thing being logged the thing
+I just cooked."
+
+- **The feature was already fully wired and still did not work.** `handleCookFinish` (`App.jsx:216`)
+  sets `historyPrefill` with the whole recipe, `HistoryScreen` auto-opens the form on it, and
+  `EntryFormModal` reads `prefill?.recipe`. Every link was correct. Reading the source is not
+  enough to catch this one — it only reproduces at runtime.
+- **The bug is an ordering race inside one React batch.** The effect that opens the form also calls
+  `onPrefillHandled()` in the same pass, which nulls `historyPrefill` in `App`. React 18 batches
+  all of it into a single re-render, so `EntryFormModal` *first mounts* with `prefill === null`.
+  Its `useState(entry?.recipe ?? prefill?.recipe ?? null)` initializer runs exactly once, at that
+  mount — so it captures `null`, and `pickerOpen` likewise defaults open.
+- **Fix: snapshot the prefill into `HistoryScreen`'s own state when opening the form**, and hand the
+  modal that snapshot. Clearing `App`'s copy immediately is then harmless — it still prevents a
+  reopen — because the modal no longer depends on the parent's copy surviving.
+- **Rejected: deferring `onPrefillHandled()` until the modal closes.** It fixes this symptom but
+  leaves a live prefill sitting in `App` for as long as the form is open, so any re-render that
+  re-runs the effect can reopen the form. The snapshot keeps "consume once" intact.
+- **General shape worth remembering:** a `useState` initializer reading a prop is a one-shot capture
+  at mount. Any sibling state update that clears that prop in the same batch wins the race. Prefer
+  snapshotting the value at the moment you decide to mount the consumer.
