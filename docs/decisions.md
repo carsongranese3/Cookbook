@@ -673,3 +673,31 @@ more specific errors".
 - **The lesson is about the guard, not the bug.** The original suite "proved" there was no false
   429 match using `DX429abc`, which has no word boundary and so never exercised the risk. A passing
   test over a case that cannot fail is worse than no test — it buys false confidence.
+
+## 2026-09-18 — Disabling zoom takes three pieces, not one
+User: "is there a way to make it so I cant zoom in/out on mobile, if so do it".
+
+- **The viewport meta alone does nothing on iPhone.** iOS Safari has ignored `user-scalable=no`
+  and `maximum-scale` since iOS 10, deliberately, including for home-screen PWAs. It still works on
+  Android Chrome, so it stays — but it is not the mechanism that matters on the device this app is
+  actually used on.
+- **Three pieces, each owning one gesture**: the viewport meta (Android pinch), JS listeners on
+  WebKit's proprietary `gesturestart`/`gesturechange`/`gestureend` (iOS pinch), and
+  `touch-action: manipulation` on `html, body` (double-tap, both platforms). They are not redundant;
+  each covers a case the others miss. `client/src/utils/disableZoom.js` says so at the top, because
+  the natural instinct on reading three overlapping fixes is to delete two of them.
+- **`touch-action: manipulation` does NOT block pinch**, contrary to how it is often described —
+  the spec has it explicitly permitting pinch zoom and disabling only non-standard gestures like
+  double-tap. `pan-x pan-y` or `none` would block pinch, but both risk interfering with scrolling
+  on a phone we cannot test from here, and the meta tag plus the JS listeners already cover pinch
+  on both platforms. Kept `manipulation`.
+- **The `touchmove` guard is scoped to `e.touches.length > 1` on purpose.** A blanket
+  `preventDefault` on `touchmove` is the standard way this gets implemented and it kills all
+  scrolling. Single-finger moves are left completely untouched.
+- **Listeners must be `{ passive: false }`** or `preventDefault()` is silently ignored — the
+  browser assumes passive listeners never call it.
+- **Existing touch interaction checked**: drag-to-reorder filter chips (`@dnd-kit`,
+  `.chip--draggable { touch-action: none }`, `styles.css:455`) is unaffected — a more specific
+  `touch-action` wins, and the drag is single-finger so the multi-touch guard never fires.
+- **OS-level accessibility zoom is untouched and cannot be blocked** by any web page. That is the
+  correct outcome, not a gap.

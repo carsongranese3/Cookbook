@@ -23,6 +23,23 @@
 /* ── Reset & base ──────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
+/*
+ * touch-action: manipulation drops double-tap-to-zoom (and the ~300ms tap
+ * delay that comes with it) while leaving normal single-finger panning,
+ * scrolling and taps alone. It does NOT stop pinch-zoom — `manipulation`
+ * explicitly still permits it; only `pan-x pan-y` / `none` would, and those
+ * risk interfering with scrolling on a device we can't test here. Pinch is
+ * handled instead by the viewport meta (Android) and the JS gesture
+ * listeners (iOS) — see src/utils/disableZoom.js. All three pieces are
+ * needed; this one owns double-tap only.
+ * Elements that need their own touch handling (e.g. the drag-to-reorder
+ * chips, .chip--draggable below) set a more specific touch-action: none
+ * and win by CSS specificity — leave those alone.
+ */
+html, body {
+  touch-action: manipulation;
+}
+
 body {
   margin: 0;
   font-family: 'Onest', system-ui, sans-serif;

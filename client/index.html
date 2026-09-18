@@ -4,7 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/pwa-192.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!--
+      maximum-scale=1, user-scalable=no here actually disables pinch/double-tap
+      zoom on Android Chrome. It does NOT work on iOS Safari (ignored since
+      iOS 10, on purpose, including for home-screen PWAs) — see
+      src/utils/disableZoom.js for the JS that's required in addition to this
+      on iPhone. viewport-fit=cover is kept for the iPhone safe-area insets
+      (notch / home indicator); do not remove it.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#c56a4a" />
     <meta name="description" content="Personal recipe app with AI video import" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
