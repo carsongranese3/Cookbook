@@ -701,3 +701,23 @@ User: "is there a way to make it so I cant zoom in/out on mobile, if so do it".
   `touch-action` wins, and the drag is single-finger so the multi-touch guard never fires.
 - **OS-level accessibility zoom is untouched and cannot be blocked** by any web page. That is the
   correct outcome, not a gap.
+
+## 2026-09-18 — Filter chips only reorder once the chevron is open
+User: "I dont want to be able move the filters unless I hit the down arrow".
+
+- **The component already documented this behavior; the code never enforced it.** The header
+  comment described collapsed chips as a plain row and drag as an expanded-only affordance, but the
+  pinned `SortableChip`s rendered identically in both states, so a long-press while simply browsing
+  could silently reorder the filter bar.
+- **Gated via `useSortable({ disabled })` rather than by not rendering the sortable.** Keeping the
+  chips inside `SortableContext` preserves their identity and layout across the expand/collapse
+  toggle; conditionally rendering two different chip components would remount them and lose the
+  drag/animation state mid-transition.
+- **`touch-action: none` is now conditional too, and that fixes a second bug.** `.chip--draggable`
+  sets `touch-action: none` so the drag sensor gets every touch — but `.filter-top-row` is
+  `overflow-x: auto` and scrolls horizontally on mobile. Applying it to *collapsed* chips meant the
+  chip row could not be swiped past the first few filters on a phone. Collapsed chips no longer
+  carry the class.
+- **Safe because `.chip--draggable` is behavior-only** — `touch-action`, `user-select`, and an
+  `:active` grab cursor. No visual styling is lost when the class is dropped, so the bar looks
+  identical in both states.

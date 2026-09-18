@@ -1,12 +1,15 @@
 /**
  * FilterBar — chip row with inline drag-to-reorder/pin and chevron expand.
  *
- * Collapsed: pinned chips in user order + a chevron toggle.
+ * Collapsed: pinned chips in user order + a chevron toggle. Chips are tap-only
+ *            here — dragging is DISABLED until the chevron is opened, so a
+ *            stray long-press while browsing can't silently reorder the bar.
  * Expanded:  pinned chips (draggable, reorderable) + unpinned chips below
  *            (alphabetical, draggable into the pinned row).
  *
- * Tap  → selects/deselects the filter (calls onChipClick).
+ * Tap  → selects/deselects the filter (calls onChipClick). Always available.
  * Drag → reorders pinned OR moves a chip between pinned ↔ rest (pin/unpin).
+ *        Only while expanded — see the `draggable` prop on SortableChip.
  *
  * Neighbor-shift behavior:
  * - onDragOver: arrayMove the live working-order so SortableContext items update
@@ -63,7 +66,14 @@ export function ChevronIcon({ open }) {
 }
 
 // ── A single draggable chip button ────────────────────────────────────────────
-function SortableChip({ filter, isActive, onChipClick, containerId, isDragOverlay = false }) {
+function SortableChip({
+  filter,
+  isActive,
+  onChipClick,
+  containerId,
+  isDragOverlay = false,
+  draggable = true,
+}) {
   const {
     attributes,
     listeners,
@@ -71,24 +81,27 @@ function SortableChip({ filter, isActive, onChipClick, containerId, isDragOverla
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: filter.id, data: { containerId } });
+  } = useSortable({ id: filter.id, data: { containerId }, disabled: !draggable });
 
   // Apply both transform AND transition so neighbors animate to fill/open gaps.
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0 : 1,  // hide original slot; overlay is the ghost
-    touchAction: 'none',
+    // touch-action: none hands every touch to the drag sensor, so it must only
+    // apply while the chip is actually draggable — otherwise a collapsed chip
+    // swallows scrolling. Undefined lets it inherit the page default.
+    touchAction: draggable ? 'none' : undefined,
   };
 
   return (
     <button
       ref={isDragOverlay ? undefined : setNodeRef}
       style={isDragOverlay ? { cursor: 'grabbing' } : style}
-      className={`chip chip--draggable${isActive ? ' active' : ''}`}
+      className={`chip${draggable ? ' chip--draggable' : ''}${isActive ? ' active' : ''}`}
       aria-pressed={isActive}
       onClick={() => !isDragOverlay && onChipClick(filter.id)}
-      {...(isDragOverlay ? {} : { ...attributes, ...listeners })}
+      {...(isDragOverlay || !draggable ? {} : { ...attributes, ...listeners })}
     >
       {filter.label}
     </button>
@@ -253,6 +266,9 @@ export default function FilterBar({
                 isActive={f.id === 'all' ? activeIds.length === 0 : activeIds.includes(f.id)}
                 onChipClick={onChipClick}
                 containerId={PINNED_CONTAINER}
+                // Reordering is an explicit mode, entered with the chevron.
+                // Collapsed, these are plain filter buttons — tap only.
+                draggable={expanded}
               />
             ))}
           </SortableContext>
