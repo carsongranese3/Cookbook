@@ -112,6 +112,10 @@ function isImpersonationUnavailable(message) {
  */
 const YTDLP_ERROR_PATTERNS = [
   // Instagram (yt_dlp/extractor/instagram.py) — specific reasons first.
+  // NOTE: these first two come from report_warning(), not an error — yt-dlp
+  // logs them and CARRIES ON (instagram.py:450, :469). They are only the real
+  // cause when nothing else terminated the run, which is why classifyYtdlpStderr
+  // scans the ERROR: lines before falling back to the whole blob.
   { code: CODES.COOKIES_EXPIRED,     test: /the provided instagram account cookies are no longer valid/i },
   { code: CODES.COOKIES_EXPIRED,     test: /instagram api is not granting access/i },
   { code: CODES.SOURCE_RATE_LIMITED, test: /exceeded the rate-limit for accessing posts anonymously/i },
@@ -127,7 +131,10 @@ const YTDLP_ERROR_PATTERNS = [
   { code: CODES.POST_UNAVAILABLE,    test: /video not available, status code/i },
   // Generic (yt_dlp/extractor/common.py raise_login_required / HTTP errors).
   { code: CODES.PRIVATE_POST,        test: /this video is only available for registered users/i },
-  { code: CODES.SOURCE_RATE_LIMITED, test: /\b429\b|too many requests/i },
+  // Anchored to how 429 actually appears: a bare /\b429\b/ also matches a
+  // numeric query param in a signed CDN URL (`?_nc_oc=429&`) or a byte count,
+  // both of which occur routinely in Instagram stderr.
+  { code: CODES.SOURCE_RATE_LIMITED, test: /http error 429|status(?: code)? 429|\btoo many requests\b/i },
   { code: CODES.POST_UNAVAILABLE,    test: /http error 404/i },
   // Generic cookies hint — appended to EVERY login-required error, so it must
   // stay last: a specific pattern above should win first.
@@ -136,10 +143,14 @@ const YTDLP_ERROR_PATTERNS = [
 
 function classifyYtdlpStderr(stderr) {
   const text = stderr || '';
-  for (const { code, test } of YTDLP_ERROR_PATTERNS) {
-    if (test.test(text)) return code;
-  }
-  return null;
+  const scan = (s) => YTDLP_ERROR_PATTERNS.find(({ test }) => test.test(s))?.code ?? null;
+  // What actually terminated the run is on an `ERROR:` line. Stray WARNING
+  // lines (stale-ish cookies, missing CSRF token) sit earlier in the blob and
+  // would otherwise outrank it purely by table position, telling the user to
+  // re-export cookies when the real failure was something else entirely.
+  // Fall back to the whole blob so a warning-only failure still classifies.
+  const errorLines = text.split('\n').filter((l) => /^\s*ERROR:/i.test(l)).join('\n');
+  return (errorLines && scan(errorLines)) || scan(text);
 }
 
 /**

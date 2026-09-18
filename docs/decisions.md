@@ -657,3 +657,19 @@ more specific errors".
   `if (err.code && err.userMessage)` idiom, so they inherit new codes without edits.
 - **`server/scripts/backfill-videos.mjs` gets better logs for free.** It only logs `err.message`
   per recipe, so classification improves the backfill diagnostics without touching it.
+- **QA follow-up: the first classifier draft misfired in the most likely real case.** Two of the
+  Instagram patterns (`...cookies are no longer valid`, `Instagram API is not granting access`) are
+  `report_warning()` strings — yt-dlp logs them and *carries on*. Scanned against the whole stderr
+  blob in table order, they outranked whatever `ERROR:` line actually killed the run, so a photo
+  post on an account with drifting cookies would confidently tell you to re-export `sessionid`.
+  `classifyYtdlpStderr` now scans the `ERROR:` lines first and falls back to the full blob, so a
+  warning still classifies when nothing else terminated the run.
+- **`/\b429\b/` was too loose.** It matched a numeric query param in a signed CDN URL
+  (`?_nc_oc=429&`) and a byte count ("Wrote 429 bytes") — both routine in Instagram stderr — turning
+  a 403 or a disk-full into "wait out the rate limit". Anchored to `http error 429`,
+  `status 429` / `status code 429`, and `too many requests`. Note TikTok's `Video not available,
+  status code N` carries TikTok's *internal* code, not HTTP; that pattern sits earlier and wins,
+  which is correct.
+- **The lesson is about the guard, not the bug.** The original suite "proved" there was no false
+  429 match using `DX429abc`, which has no word boundary and so never exercised the risk. A passing
+  test over a case that cannot fail is worse than no test — it buys false confidence.

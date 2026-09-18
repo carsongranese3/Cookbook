@@ -33,7 +33,9 @@
  *
  * Both functions resolve to a DraftRecipe on success, or throw an ExtractError
  * on failure. The ExtractError carries:
- *   err.code        ∈ { UNSUPPORTED_URL, FETCH_FAILED, NO_RECIPE, PARSE_FAILED, TIMEOUT, CONFIG }
+ *   err.code        — any key of CODES (see ./errors.js). The video-source
+ *     classifications (COOKIES_EXPIRED, PRIVATE_POST, NO_VIDEO_IN_POST, …) come
+ *     from classifyYtdlpStderr() in ./ytdlp.js; FETCH_FAILED is the fallback.
  *   err.userMessage — a safe, friendly string for the UI error banner.
  *
  * Re-exports ExtractError and CODES so route handlers can switch on err.code.
