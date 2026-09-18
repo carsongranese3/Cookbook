@@ -298,14 +298,24 @@ function normalizeBody(body = {}) {
  */
 function extractCodeToStatus(code) {
   switch (code) {
-    case 'UNSUPPORTED_URL': return 400;
-    case 'NO_RECIPE':       return 422;
-    case 'PARSE_FAILED':    return 422;
-    case 'FETCH_FAILED':    return 502;
-    case 'TIMEOUT':         return 504;
-    case 'CONFIG':          return 503;
-    case 'RATE_LIMITED':    return 429;
-    default:                return 500;
+    case 'UNSUPPORTED_URL':     return 400;
+    case 'NO_RECIPE':           return 422;
+    case 'PARSE_FAILED':        return 422;
+    case 'FETCH_FAILED':        return 502;
+    case 'TIMEOUT':             return 504;
+    case 'CONFIG':              return 503;
+    case 'RATE_LIMITED':        return 429;
+    // Specific yt-dlp/source failure classifications (see extract/ytdlp.js's
+    // classifyYtdlpStderr and docs/decisions.md "2026-09-18" entry).
+    case 'COOKIES_EXPIRED':     return 503;
+    case 'SOURCE_RATE_LIMITED': return 429;
+    case 'PRIVATE_POST':        return 403;
+    case 'POST_UNAVAILABLE':    return 404;
+    case 'NO_VIDEO_IN_POST':    return 422;
+    case 'GEO_OR_IP_BLOCKED':   return 403;
+    case 'SOURCE_UNAVAILABLE':  return 502;
+    case 'DOWNLOADER_MISSING':  return 503;
+    default:                    return 500;
   }
 }
 

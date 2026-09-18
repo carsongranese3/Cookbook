@@ -566,16 +566,28 @@ Both functions return a `DraftRecipe` (see §1) on success, or throw an
 
 ### Error codes (`err.code`)
 
-| Code              | When thrown |
-|-------------------|-------------|
-| `UNSUPPORTED_URL` | URL is not Instagram or TikTok. |
-| `FETCH_FAILED`    | yt-dlp non-zero exit, missing yt-dlp binary, Gemini upload failed, video too large, file I/O error. |
-| `NO_RECIPE`       | Gemini returned a valid JSON object with no ingredients and no steps (non-cooking video). |
-| `PARSE_FAILED`    | Could not parse Gemini response as JSON after one retry. |
-| `TIMEOUT`         | yt-dlp or Gemini request exceeded the time limit. |
-| `CONFIG`          | `GEMINI_API_KEY` not set, or `@google/generative-ai` not installed. |
+| Code                  | When thrown |
+|-----------------------|-------------|
+| `UNSUPPORTED_URL`     | URL is not Instagram or TikTok. |
+| `FETCH_FAILED`        | yt-dlp non-zero exit not matched by any more specific code below, Gemini upload failed, video too large, file I/O error. |
+| `NO_RECIPE`           | Gemini returned a valid JSON object with no ingredients and no steps (non-cooking video). |
+| `PARSE_FAILED`        | Could not parse Gemini response as JSON after one retry. |
+| `TIMEOUT`             | yt-dlp or Gemini request exceeded the time limit. |
+| `CONFIG`              | `GEMINI_API_KEY` not set, or `@google/generative-ai` not installed. |
+| `RATE_LIMITED`        | Every model in Gemini's free-tier fallback chain is rate-limited. **Not** the same as `SOURCE_RATE_LIMITED` below — this one is Gemini quota. |
+| `DOWNLOADER_MISSING`  | The yt-dlp binary could not be found or spawned. |
+| `COOKIES_EXPIRED`     | Instagram's saved login has expired or is missing the session cookie. yt-dlp stderr: "cookies are no longer valid", "API is not granting access", or the generic "Use --cookies-from-browser or --cookies for the authentication" hint (appended to every login-required error). `err.userMessage` names the `YTDLP_COOKIES` path and says to re-export cookies including the HttpOnly `sessionid`. |
+| `SOURCE_RATE_LIMITED` | Instagram or TikTok itself is rate-limiting this server (yt-dlp: "exceeded the rate-limit for accessing posts anonymously", HTTP 429 / "Too Many Requests"). Distinct from `RATE_LIMITED` (Gemini). |
+| `PRIVATE_POST`        | Private account / must follow to view (yt-dlp: "only available for registered users who follow this account", "Restricted Video", "This video is only available for registered users"). |
+| `POST_UNAVAILABLE`    | Post deleted, gone, or an empty media response (yt-dlp: "Instagram sent an empty media response", "Video not available, status code N", HTTP 404). |
+| `NO_VIDEO_IN_POST`    | Zero video formats found — a photo/carousel post, OR Instagram withholding the video. One honest message covers both; the response doesn't reliably tell them apart. Also thrown when yt-dlp exits 0 but produces no video file at all. |
+| `GEO_OR_IP_BLOCKED`   | This server's IP is blocked from the post (yt-dlp: "Your IP address is blocked from accessing this post"). |
+| `SOURCE_UNAVAILABLE`  | Transient extractor failure, usually worth retrying (yt-dlp: "Unexpected response from webpage request", "Unable to solve JS challenge"). |
 
-`err.userMessage` is always a safe, friendly string suitable for the UI error banner.
+`err.userMessage` is always a safe, friendly string suitable for the UI error banner. See
+`server/extract/ytdlp.js`'s `classifyYtdlpStderr()` for the exact stderr-pattern classification, and
+`docs/decisions.md` "2026-09-18 — Import failures collapse into one unactionable error" for the
+rationale (this replaced a prior design where every yt-dlp failure collapsed into `FETCH_FAILED`).
 
 ---
 
@@ -615,8 +627,8 @@ link or upload file). There is no background polling.
 | Gemini upload + generation timeout | Configurable via `GEMINI_TIMEOUT_MS`; default 2 minutes. Throws `TIMEOUT`. |
 | Gemini file processing poll | Polls every 3 seconds until `ACTIVE` or `FAILED`, bounded by `GEMINI_TIMEOUT_MS`. |
 | JSON parse failure | Strips fences, falls back to `{…}` slice, then retries the model once with a JSON-only prompt. On second failure throws `PARSE_FAILED`. |
-| yt-dlp missing / bad exit | Throws `FETCH_FAILED` immediately; no retry (user should upload the file instead). |
-| IG cookies expired | Treated as `FETCH_FAILED`; `err.userMessage` tells the user to upload the file instead. |
+| yt-dlp missing / bad exit | No retry. The binary missing/unspawnable throws `DOWNLOADER_MISSING`; a non-zero exit is classified against the full stderr (`classifyYtdlpStderr`) into one of `COOKIES_EXPIRED`, `SOURCE_RATE_LIMITED`, `PRIVATE_POST`, `POST_UNAVAILABLE`, `NO_VIDEO_IN_POST`, `GEO_OR_IP_BLOCKED`, `SOURCE_UNAVAILABLE`, falling back to `FETCH_FAILED` only when nothing matches. |
+| IG cookies expired | Throws `COOKIES_EXPIRED` (not `FETCH_FAILED`); `err.userMessage` names the `YTDLP_COOKIES` path and tells the user to re-export cookies including the HttpOnly `sessionid`. |
 | Temp file cleanup | The `cleanup()` callback from `downloadVideo` is always called in a `finally` block, even when Gemini fails. |
 | Empty result | If parsed object has no ingredients AND no steps, throws `NO_RECIPE` rather than returning an empty draft. |
 

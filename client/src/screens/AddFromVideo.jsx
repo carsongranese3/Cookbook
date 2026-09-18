@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
 import { fileToDownscaledDataUrl } from '../utils/image.js';
+import { serverErrorMessage } from '../utils/errors.js';
 
 const STATUS_MESSAGES = [
   'Transcribing narration & captions',
@@ -84,19 +85,26 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
       setState('draft');
     } catch (e) {
       const code = e.code;
-      let msg = e.message;
-      if (code === 'FETCH_FAILED' || e.status === 502) {
-        msg = 'Could not read that video. Check the link, or upload the file instead.';
-      } else if (code === 'UNSUPPORTED_URL') {
-        msg = 'Only TikTok and Instagram links are supported. Try uploading a file instead.';
-      } else if (code === 'NO_RECIPE') {
-        msg = "Couldn't find a recipe in that video. Try a different video or upload a file.";
-      } else if (code === 'TIMEOUT') {
-        msg = 'The request timed out. Try again or upload a file instead.';
-      } else if (code === 'RATE_LIMITED' || e.status === 429) {
-        msg = e.message || 'The AI is over its free-tier limit or busy. Wait a bit and try again.';
-      } else if (code === 'CONFIG' || e.status === 503) {
-        msg = 'AI extraction is not configured on the server.';
+      // Prefer the server's own message (it now owns the wording, see
+      // docs/api.md §9). Only fall back to a hardcoded string when it didn't
+      // send one — network failure, offline, an opaque 500, or an empty body.
+      let msg = serverErrorMessage(e);
+      if (!msg) {
+        if (code === 'FETCH_FAILED' || e.status === 502) {
+          msg = 'Could not read that video. Check the link, or upload the file instead.';
+        } else if (code === 'UNSUPPORTED_URL') {
+          msg = 'Only TikTok and Instagram links are supported. Try uploading a file instead.';
+        } else if (code === 'NO_RECIPE') {
+          msg = "Couldn't find a recipe in that video. Try a different video or upload a file.";
+        } else if (code === 'TIMEOUT') {
+          msg = 'The request timed out. Try again or upload a file instead.';
+        } else if (code === 'RATE_LIMITED' || e.status === 429) {
+          msg = 'The AI is over its free-tier limit or busy. Wait a bit and try again.';
+        } else if (code === 'CONFIG' || code === 'EXTRACT_UNAVAILABLE' || e.status === 503) {
+          msg = 'AI extraction is not configured on the server.';
+        } else {
+          msg = 'Could not read that video. Check the link, or upload the file instead.';
+        }
       }
       showError(msg);
     }
@@ -114,11 +122,16 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
       setState('draft');
     } catch (e) {
       const code = e.code;
-      let msg = e.message;
-      if (code === 'NO_RECIPE') {
-        msg = "Couldn't find a recipe in that video. Try a different file.";
-      } else if (code === 'CONFIG' || e.status === 503) {
-        msg = 'AI extraction is not configured on the server.';
+      // Same precedence as handleExtract: the server's message wins when it sent one.
+      let msg = serverErrorMessage(e);
+      if (!msg) {
+        if (code === 'NO_RECIPE') {
+          msg = "Couldn't find a recipe in that video. Try a different file.";
+        } else if (code === 'CONFIG' || code === 'EXTRACT_UNAVAILABLE' || e.status === 503) {
+          msg = 'AI extraction is not configured on the server.';
+        } else {
+          msg = 'Could not process that video. Try a different file.';
+        }
       }
       showError(msg);
     } finally {

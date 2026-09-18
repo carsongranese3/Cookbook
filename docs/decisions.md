@@ -611,3 +611,49 @@ I just cooked."
 - **General shape worth remembering:** a `useState` initializer reading a prop is a one-shot capture
   at mount. Any sibling state update that clears that prop in the same batch wins the race. Prefer
   snapshotting the value at the moment you decide to mount the consumer.
+
+## 2026-09-18 — Import failures collapse into one unactionable error
+User: "why do I get an error when trying to import videos"; then "can you have the program produce
+more specific errors".
+
+- **The generic message cost a full debugging session.** Every yt-dlp failure became
+  `FETCH_FAILED` → "Could not read that video. Check the link, or upload the file instead."
+  The actual cause was that `cookies.txt` had no HttpOnly `sessionid`, so Instagram served
+  logged-out responses. yt-dlp was printing `The provided Instagram account cookies are no longer
+  valid` to stderr the entire time; we discarded it and diagnosed it by hand instead.
+- **Two layers were flattening the signal, not one.** The server mapped all non-zero yt-dlp exits
+  to `FETCH_FAILED` (`ytdlp.js` close handler), and the client then *overwrote* whatever
+  `userMessage` the server sent whenever the code was `FETCH_FAILED` or the status was 502
+  (`AddFromVideo.jsx:87`). Fixing only the server would have changed nothing visible.
+- **Classify on yt-dlp's stderr strings, which are stable and specific.** Instagram:
+  `...cookies are no longer valid` (re-export cookies), `Instagram API is not granting access`,
+  `exceeded the rate-limit for accessing posts anonymously`, `only available for registered users
+  who follow this account`, `Restricted Video`, `There is no video in this post` /
+  `No video formats found!`, `Instagram sent an empty media response`. TikTok:
+  `Unexpected response from webpage request`, `Unable to solve JS challenge`,
+  `Your IP address is blocked from accessing this post`, `Video not available, status code N`.
+  These come from the extractors' own `raise ExtractorError` / `raise_login_required` calls.
+- **Follows the existing precedent.** `isImpersonationUnavailable()` in `ytdlp.js` already
+  pattern-matches stderr to recover from one specific failure; this generalizes that idea rather
+  than inventing a mechanism.
+- **The client stops rewriting server messages.** It renders the server's `userMessage` and keeps
+  hardcoded strings only as a fallback when none arrives. The server owns the wording, one place.
+- **`extractCodeToStatus` already has a `default: 500`**, so new codes degrade safely; each new one
+  still gets an explicit status.
+- **Deliberately not distinguishing "photo post" from "Instagram withheld the video".** Both
+  surface as zero formats and the response does not reliably tell them apart — one honest message
+  covering both beats a confident wrong one.
+- **Adding codes is structurally safe, but silently *wrong* in two spots.** Nothing enumerates
+  `CODES` exhaustively — `extractCodeToStatus` defaults to 500 and every client chain falls through
+  to `e.message` — so new codes cannot crash anything. What they *can* do is collide on HTTP status:
+  `COOKIES_EXPIRED` (503) would have been swallowed by the client's `e.status === 503` branch and
+  shown as "AI extraction is not configured on the server", and `SOURCE_RATE_LIMITED` (429) by the
+  `e.status === 429` branch and shown as the Gemini billing message. Preferring the server's
+  `userMessage` over the hardcoded strings resolves both; status checks stay only as a fallback.
+- **There are two client sites, not one.** `RecipeDetail.jsx` (~47-60) has its own error chain for
+  the Cook Mode cover-frame re-fetch, which calls the same yt-dlp path and had the same clobbering
+  bug. And three server routes share the plumbing — `/api/extract`, `/api/extract/upload`, and
+  `/api/extract-and-save` (the iOS Shortcut path) — all via the same
+  `if (err.code && err.userMessage)` idiom, so they inherit new codes without edits.
+- **`server/scripts/backfill-videos.mjs` gets better logs for free.** It only logs `err.message`
+  per recipe, so classification improves the backfill diagnostics without touching it.

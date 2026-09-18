@@ -293,9 +293,10 @@ Returned when the recipe has no `source_url` (manually-entered recipes, or impor
 **Response 503** — extract module not available (`EXTRACT_UNAVAILABLE`).
 
 **Error responses** for yt-dlp failures follow the extract error shape (see §8 error table). Common codes:
-- `FETCH_FAILED` (502) — yt-dlp could not re-download the video (link expired, private, etc.).
+- `FETCH_FAILED` (502) — yt-dlp could not re-download the video, for a reason not covered below.
 - `UNSUPPORTED_URL` (400) — the stored `source_url` is not an IG/TikTok link.
 - `TIMEOUT` (504) — download timed out.
+- `COOKIES_EXPIRED` (503), `SOURCE_RATE_LIMITED` (429), `PRIVATE_POST` (403), `POST_UNAVAILABLE` (404), `NO_VIDEO_IN_POST` (422), `GEO_OR_IP_BLOCKED` (403), `SOURCE_UNAVAILABLE` (502), `DOWNLOADER_MISSING` (503) — same specific yt-dlp classifications as `/api/extract`; see §8's table for meanings.
 
 ---
 
@@ -1548,10 +1549,19 @@ Field notes for the video/Cook Mode fields:
 | `UNSUPPORTED_URL`    | 400         | URL is not an Instagram or TikTok link (or URL field is missing).     |
 | `NO_RECIPE`          | 422         | Video processed but no recipe was found in it.                        |
 | `PARSE_FAILED`       | 422         | Gemini returned output that could not be parsed as valid recipe JSON. |
-| `FETCH_FAILED`       | 502         | yt-dlp could not download the video (private, bad link, etc.).        |
+| `FETCH_FAILED`       | 502         | yt-dlp could not download the video, for a reason not covered by the more specific codes below. |
 | `TIMEOUT`            | 504         | The extraction request timed out.                                     |
 | `CONFIG`             | 503         | Server is not configured (missing `GEMINI_API_KEY`).                  |
-| `EXTRACT_UNAVAILABLE`| 503         | Extract module failed to load on the server.                          |
+| `RATE_LIMITED`       | 429         | Every model in Gemini's free-tier fallback chain is rate-limited. **Not** the same as `SOURCE_RATE_LIMITED` below. |
+| `COOKIES_EXPIRED`    | 503         | Instagram's saved login has expired or is missing the session cookie (yt-dlp: "cookies are no longer valid" / "API is not granting access" / the generic cookies-from-browser hint). Message tells the user to re-export cookies including the HttpOnly `sessionid` and points at the `YTDLP_COOKIES` path. |
+| `SOURCE_RATE_LIMITED`| 429         | Instagram or TikTok itself is rate-limiting this server's requests (yt-dlp: "exceeded the rate-limit for accessing posts anonymously", HTTP 429 / "Too Many Requests"). Distinct from `RATE_LIMITED`, which is Gemini quota. |
+| `PRIVATE_POST`       | 403         | The post is private / restricted to followers (yt-dlp: "only available for registered users who follow this account", "Restricted Video", "This video is only available for registered users"). |
+| `POST_UNAVAILABLE`   | 404         | The post is deleted, gone, or returned an empty media response (yt-dlp: "Instagram sent an empty media response", "Video not available, status code N", HTTP 404). |
+| `NO_VIDEO_IN_POST`   | 422         | No video formats were found — either a photo/carousel post, or Instagram withholding the video. Deliberately one honest message for both; the response doesn't reliably distinguish them. |
+| `GEO_OR_IP_BLOCKED`  | 403         | This server's IP address is blocked from accessing the post (yt-dlp: "Your IP address is blocked from accessing this post"). |
+| `SOURCE_UNAVAILABLE` | 502         | Transient extractor failure, usually worth retrying (yt-dlp: "Unexpected response from webpage request", "Unable to solve JS challenge"). |
+| `DOWNLOADER_MISSING` | 503         | The yt-dlp binary could not be found or spawned on the server.        |
+| `EXTRACT_UNAVAILABLE`| 503         | Extract module failed to load on the server. (Route-level ad hoc code — not one of `CODES` in `extract/errors.js`.) |
 
 ---
 
@@ -1569,8 +1579,12 @@ Accepts an Instagram Reel or TikTok link. The backend runs yt-dlp to download th
 
 **Error responses** — extract error object with status from the table above. Common errors:
 - `400` — URL missing or not Instagram/TikTok.
-- `502` — yt-dlp could not fetch the video (suggest upload fallback to user).
-- `503` — server not configured.
+- `403` — post is private (`PRIVATE_POST`) or this server's IP is blocked (`GEO_OR_IP_BLOCKED`).
+- `404` — post deleted/unavailable (`POST_UNAVAILABLE`).
+- `422` — no video in the post — photo/carousel or IG withheld it (`NO_VIDEO_IN_POST`).
+- `429` — Instagram/TikTok is rate-limiting the server (`SOURCE_RATE_LIMITED`) or Gemini's free tier is exhausted (`RATE_LIMITED`).
+- `502` — yt-dlp could not fetch the video for another reason (`FETCH_FAILED`), or a transient extractor hiccup worth retrying (`SOURCE_UNAVAILABLE`).
+- `503` — server not configured (`CONFIG`), IG cookies expired (`COOKIES_EXPIRED`), or yt-dlp itself is missing (`DOWNLOADER_MISSING`).
 - `504` — request timed out.
 
 ---

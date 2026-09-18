@@ -674,6 +674,7 @@ a:hover { color: var(--accent-dark); }
   border-radius: 12px;
   padding: 14px 16px;
   font: 400 13px 'Onest';
+  line-height: 1.5;
   color: var(--accent-dark);
   margin-top: 20px;
 }
@@ -3813,6 +3814,7 @@ a:hover { color: var(--accent-dark); }
 .cp-frames-error,
 .cp-frames-empty {
   font: 400 13px 'Onest';
+  line-height: 1.5;
   color: var(--secondary);
   padding: 12px 0;
   margin: 0;

@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { shortDayName, formatDayDate } from '../utils/week.js';
 import { fileToDownscaledDataUrl } from '../utils/image.js';
 import { titleCase } from '../utils/text.js';
+import { serverErrorMessage } from '../utils/errors.js';
 
 export default function RecipeDetail({
   recipe,
@@ -48,17 +49,25 @@ export default function RecipeDetail({
       const result = await api.recipeFrames(recipe.id);
       setFrameCandidates(result?.candidates ?? []);
     } catch (err) {
-      if (err.code === 'NO_SOURCE' || err.status === 422) {
-        setFramesError('This recipe has no source video. Upload a photo instead.');
-      } else if (err.status === 503) {
-        setFramesError('Video extraction is not configured on the server.');
-      } else if (err.code === 'FETCH_FAILED' || err.status === 502) {
-        setFramesError('Could not re-download the video (link may have expired). Upload a photo instead.');
-      } else if (err.code === 'TIMEOUT' || err.status === 504) {
-        setFramesError('Timed out fetching frames. Try again or upload a photo.');
-      } else {
-        setFramesError(err.message || 'Could not load video frames.');
+      // Prefer the server's own message (it now owns the wording, see
+      // docs/api.md §9) — only fall back to a hardcoded string when it
+      // didn't send one (network failure, an opaque response, empty body).
+      // NO_SOURCE stays first since it's genuinely client-specific wording.
+      let msg = err.code === 'NO_SOURCE' ? 'This recipe has no source video. Upload a photo instead.' : serverErrorMessage(err);
+      if (!msg) {
+        if (err.status === 422) {
+          msg = 'This recipe has no source video. Upload a photo instead.';
+        } else if (err.code === 'FETCH_FAILED' || err.status === 502) {
+          msg = 'Could not re-download the video (link may have expired). Upload a photo instead.';
+        } else if (err.code === 'TIMEOUT' || err.status === 504) {
+          msg = 'Timed out fetching frames. Try again or upload a photo.';
+        } else if (err.code === 'EXTRACT_UNAVAILABLE' || err.status === 503) {
+          msg = 'Video extraction is not configured on the server.';
+        } else {
+          msg = 'Could not load video frames.';
+        }
       }
+      setFramesError(msg);
       setFrameCandidates([]);
     } finally {
       setFramesLoading(false);

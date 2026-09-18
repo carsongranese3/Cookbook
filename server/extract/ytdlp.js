@@ -12,8 +12,18 @@
  *   { filePath: string, mimeType: string, caption: string, cleanup: () => Promise<void> }
  *
  * Throws ExtractError with codes:
- *   UNSUPPORTED_URL — not an IG or TikTok link
- *   FETCH_FAILED    — yt-dlp not found, non-zero exit, or I/O error
+ *   UNSUPPORTED_URL     — not an IG or TikTok link
+ *   DOWNLOADER_MISSING  — yt-dlp binary not found / could not be spawned
+ *   COOKIES_EXPIRED      — IG session cookies invalid/logged out
+ *   SOURCE_RATE_LIMITED  — rate-limited by Instagram/TikTok (not Gemini)
+ *   PRIVATE_POST         — private account / must follow to view
+ *   POST_UNAVAILABLE     — deleted, 404, or empty media response
+ *   NO_VIDEO_IN_POST     — photo/carousel post, or IG withheld the video
+ *   GEO_OR_IP_BLOCKED    — this server's IP is blocked from the post
+ *   SOURCE_UNAVAILABLE   — transient extractor failure, usually worth a retry
+ *   TIMEOUT              — yt-dlp exceeded its time limit
+ *   FETCH_FAILED         — any other non-zero exit or I/O error (fallback)
+ * See classifyYtdlpStderr() below for the stderr → code mapping.
  */
 
 import { spawn }             from 'node:child_process';
@@ -80,6 +90,76 @@ function isImpersonationUnavailable(message) {
 }
 
 /**
+ * Ordered stderr → ExtractError-code classification for yt-dlp failures.
+ * Matched case-insensitively against the FULL (untruncated) stderr — never
+ * the 500-char `detail` slice, since the identifying line often sits past
+ * 500 chars in a Python traceback (same trap `isImpersonationUnavailable`
+ * already documents).
+ *
+ * Order matters: a login-required error from yt_dlp's `raise_login_required`
+ * carries BOTH a specific reason (private post, restricted, etc.) AND the
+ * generic "Use --cookies-from-browser or --cookies for the authentication"
+ * hint appended to every one of them. The generic cookies-hint pattern is
+ * therefore listed LAST so a specific reason is never misclassified as
+ * expired cookies.
+ *
+ * See docs/decisions.md "2026-09-18 — Import failures collapse into one
+ * unactionable error" for the source strings and rationale.
+ *
+ * @param {string} stderr  Full, untruncated yt-dlp stderr.
+ * @returns {keyof typeof CODES | null}  null when nothing matches (caller
+ *   should fall back to FETCH_FAILED).
+ */
+const YTDLP_ERROR_PATTERNS = [
+  // Instagram (yt_dlp/extractor/instagram.py) — specific reasons first.
+  { code: CODES.COOKIES_EXPIRED,     test: /the provided instagram account cookies are no longer valid/i },
+  { code: CODES.COOKIES_EXPIRED,     test: /instagram api is not granting access/i },
+  { code: CODES.SOURCE_RATE_LIMITED, test: /exceeded the rate-limit for accessing posts anonymously/i },
+  { code: CODES.PRIVATE_POST,        test: /only available for registered users who follow this account/i },
+  { code: CODES.PRIVATE_POST,        test: /restricted video/i },
+  { code: CODES.NO_VIDEO_IN_POST,    test: /there is no video in this post/i },
+  { code: CODES.NO_VIDEO_IN_POST,    test: /no video formats found/i },
+  { code: CODES.POST_UNAVAILABLE,    test: /instagram sent an empty media response/i },
+  // TikTok (yt_dlp/extractor/tiktok.py).
+  { code: CODES.SOURCE_UNAVAILABLE,  test: /unexpected response from webpage request/i },
+  { code: CODES.SOURCE_UNAVAILABLE,  test: /unable to solve js challenge/i },
+  { code: CODES.GEO_OR_IP_BLOCKED,   test: /your ip address is blocked from accessing this post/i },
+  { code: CODES.POST_UNAVAILABLE,    test: /video not available, status code/i },
+  // Generic (yt_dlp/extractor/common.py raise_login_required / HTTP errors).
+  { code: CODES.PRIVATE_POST,        test: /this video is only available for registered users/i },
+  { code: CODES.SOURCE_RATE_LIMITED, test: /\b429\b|too many requests/i },
+  { code: CODES.POST_UNAVAILABLE,    test: /http error 404/i },
+  // Generic cookies hint — appended to EVERY login-required error, so it must
+  // stay last: a specific pattern above should win first.
+  { code: CODES.COOKIES_EXPIRED,     test: /use --cookies-from-browser or --cookies for the authentication/i },
+];
+
+function classifyYtdlpStderr(stderr) {
+  const text = stderr || '';
+  for (const { code, test } of YTDLP_ERROR_PATTERNS) {
+    if (test.test(text)) return code;
+  }
+  return null;
+}
+
+/**
+ * Build the COOKIES_EXPIRED userMessage, naming the actual configured
+ * cookies path when known (falls back to just naming the env var).
+ * @returns {string}
+ */
+function cookiesExpiredMessage() {
+  const cookiesFile = process.env.YTDLP_COOKIES;
+  const where = cookiesFile
+    ? `the cookies file at \`${cookiesFile}\` (YTDLP_COOKIES)`
+    : 'the file configured via YTDLP_COOKIES';
+  return (
+    "Instagram's saved login has expired or is missing the session cookie. " +
+    'Re-export cookies from a logged-in browser session — make sure the ' +
+    `HttpOnly \`sessionid\` cookie is included — and replace ${where}.`
+  );
+}
+
+/**
  * Low-level spawn of yt-dlp with the exact args given.
  * Resolves with { stdout, stderr } or rejects on non-zero exit.
  *
@@ -95,9 +175,8 @@ function spawnYtdlp(args, { timeoutMs = 120_000 } = {}) {
     } catch (err) {
       reject(
         new ExtractError(
-          CODES.FETCH_FAILED,
+          CODES.DOWNLOADER_MISSING,
           `yt-dlp not found or could not be spawned: ${err.message}`,
-          'Could not start the video downloader. Make sure yt-dlp is installed on the server.',
         ),
       );
       return;
@@ -125,14 +204,16 @@ function spawnYtdlp(args, { timeoutMs = 120_000 } = {}) {
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
+        // Classify against the FULL stderr — the identifying line (for the
+        // impersonation fallback, or for one of the patterns below) can sit
+        // well past 500 chars in a long Python traceback.
+        const matchedCode = classifyYtdlpStderr(stderr) ?? CODES.FETCH_FAILED;
+        const userMessage = matchedCode === CODES.COOKIES_EXPIRED ? cookiesExpiredMessage() : undefined;
         reject(
           new ExtractError(
-            CODES.FETCH_FAILED,
+            matchedCode,
             `yt-dlp exited ${code}: ${stderr.slice(0, 500)}`,
-            undefined,
-            // Untruncated stderr: the identifying line for the impersonation
-            // fallback (e.g. "Impersonate target ... is not available") can
-            // sit well past 500 chars in a long Python traceback.
+            userMessage,
             `yt-dlp exited ${code}: ${stderr}`,
           ),
         );
@@ -143,9 +224,8 @@ function spawnYtdlp(args, { timeoutMs = 120_000 } = {}) {
       clearTimeout(timer);
       reject(
         new ExtractError(
-          CODES.FETCH_FAILED,
+          CODES.DOWNLOADER_MISSING,
           `yt-dlp process error: ${err.message}`,
-          'Could not read that video. Check the link, or upload the file instead.',
         ),
       );
     });
@@ -315,8 +395,11 @@ export async function downloadVideo(url) {
   const videoFile = entries.find((f) => /\.(mp4|webm|mov|mkv)$/i.test(f));
   if (!videoFile) {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    // yt-dlp exited 0 but produced no video file — no stderr to classify,
+    // but the shape is the same as NO_VIDEO_IN_POST: a photo/carousel post
+    // (or Instagram withholding the video). One honest message covers both.
     throw new ExtractError(
-      CODES.FETCH_FAILED,
+      CODES.NO_VIDEO_IN_POST,
       'yt-dlp did not produce a video file.',
     );
   }
