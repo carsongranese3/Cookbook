@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { api } from '../api.js';
 import RecipeImage from '../components/RecipeImage.jsx';
+import DuplicateVideoModal from '../components/DuplicateVideoModal.jsx';
 import { fileToDownscaledDataUrl } from '../utils/image.js';
 import { serverErrorMessage } from '../utils/errors.js';
+import { findDuplicateRecipe } from '../utils/videoUrlKey.js';
 
 const STATUS_MESSAGES = [
   'Transcribing narration & captions',
@@ -27,7 +29,7 @@ function statusCycle(setStatus) {
   return () => clearInterval(id);
 }
 
-export default function AddFromVideo({ onSaved, isOffline, embedded }) {
+export default function AddFromVideo({ onSaved, isOffline, embedded, recipes, onOpenExisting }) {
   const [url, setUrl]           = useState('');
   const [state, setState]       = useState('idle'); // idle | loading | error | draft
   const [aiStatus, setAiStatus] = useState('');
@@ -37,6 +39,11 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
   const savingRef                = useRef(false);
   const fileRef                 = useRef(null);
   const stopStatus              = useRef(null);
+
+  // Set when a pasted URL matches an already-imported recipe (client-side
+  // key check, see utils/videoUrlKey.js) — shows a confirm-before-you-spend-
+  // quota modal instead of extracting immediately.
+  const [dupRecipe, setDupRecipe] = useState(null);
 
   // User-defined filter list (fetched once)
   const [userFilters, setUserFilters]     = useState([]);
@@ -77,6 +84,28 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
       showError('Only TikTok and Instagram links are supported. Paste an IG Reel or TikTok, or upload a file instead.');
       return;
     }
+    // Client-side only — no request has gone out yet, so a match here costs
+    // nothing. Ask before spending a yt-dlp download / Gemini call on a
+    // video already in the library.
+    const existing = findDuplicateRecipe(recipes, trimmed);
+    if (existing) {
+      setDupRecipe(existing);
+      return;
+    }
+    runExtract(trimmed);
+  }
+
+  function cancelDuplicate() {
+    setDupRecipe(null); // form (url, state) is untouched
+  }
+
+  function continueDuplicate() {
+    const trimmed = url.trim();
+    setDupRecipe(null);
+    runExtract(trimmed);
+  }
+
+  async function runExtract(trimmed) {
     startLoading();
     try {
       const result = await api.extract.fromUrl(trimmed);
@@ -319,6 +348,16 @@ export default function AddFromVideo({ onSaved, isOffline, embedded }) {
           onSave={saveDraft}
           onDiscard={discard}
           saving={saving}
+        />
+      )}
+
+      {/* Duplicate-import confirmation — client-side match, no request sent yet */}
+      {dupRecipe && (
+        <DuplicateVideoModal
+          recipe={dupRecipe}
+          onCancel={cancelDuplicate}
+          onContinue={continueDuplicate}
+          onOpenExisting={onOpenExisting}
         />
       )}
     </div>

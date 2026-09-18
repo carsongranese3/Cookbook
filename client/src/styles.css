@@ -1632,6 +1632,40 @@ a:hover { color: var(--accent-dark); }
   }
 }
 
+/* ── Duplicate video import modal (AddFromVideo) ────────────────────────── */
+.dup-video-modal {
+  width: 400px;
+}
+
+@media (max-width: 767px) {
+  .dup-video-modal {
+    width: 100%;
+  }
+}
+
+.dup-video-body {
+  padding: 16px 20px 4px;
+  overflow: visible;
+}
+
+.dup-video-text {
+  margin: 0 0 14px;
+  font: 400 14px/1.5 'Onest', system-ui;
+  color: var(--text);
+}
+
+.dup-video-recipe {
+  cursor: default;
+  padding: 9px 10px;
+  background: var(--fill);
+}
+
+.dup-video-recipe:hover { background: var(--fill); }
+
+.dup-video-open-link {
+  margin-top: 2px;
+}
+
 /* ── Settings modal ─────────────────────────────────────────────────────── */
 .settings-modal {
   width: 420px;

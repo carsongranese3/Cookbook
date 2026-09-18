@@ -721,3 +721,27 @@ User: "I dont want to be able move the filters unless I hit the down arrow".
 - **Safe because `.chip--draggable` is behavior-only** — `touch-action`, `user-select`, and an
   `:active` grab cursor. No visual styling is lost when the class is dropped, so the bar looks
   identical in both states.
+
+## 2026-09-18 — Duplicate-import check runs client-side, before any request
+User: "can there also be a check where if I have already imported a video it pops up you have
+already imported this video are you sure you want to import again… This check should happen before
+api call".
+
+- **No new endpoint and no extra request.** `GET /api/recipes` already returns `source_url` on
+  every recipe and `App.jsx` holds that list in state, so the check reads data the client is
+  already carrying. `AddFromVideo` just needed the list passed down (both render sites).
+- **Exact string comparison would have been useless.** A survey of the live DB found 38 of the
+  stored Instagram URLs carry `?igsh=` / `?stkn=` share params that change on every Share tap, so
+  the same reel pasted twice is rarely the same string. Matching is on a normalized key —
+  `ig:<shortcode>`, `tt:<id>`, `ttshort:<token>` — ignoring scheme, `www.`, trailing slash, query
+  and hash. IG shortcode case is preserved because those are case-sensitive.
+- **`null` means "no key", never "matches everything".** An unrecognized URL returns null and
+  `findDuplicateRecipe` bails before scanning, so two unkeyable URLs are never equal to each other.
+  Verified: `evil.com/reel/<code>` returns null — the host check is exact, not a substring match.
+- **Known gap, accepted deliberately:** a TikTok `/t/<token>` share link and the canonical
+  `/@user/video/<id>` URL for the same video produce different keys and won't match, because
+  resolving the redirect needs a network call — the exact thing this feature exists to avoid. 5 of
+  the stored recipes are `/t/` links, so this will occasionally miss a real duplicate. It cannot
+  produce a *false* duplicate, which is the failure mode that would actually be irritating.
+- **Verified against the real library, not fixtures:** all 45 stored URLs match themselves, 45
+  distinct keys, zero collisions, zero unkeyable.

@@ -364,7 +364,13 @@ export default function App() {
             {newMode === 'manual' ? (
               <RecipeFormScreen embedded recipe={null} onSave={handleSave} onCancel={backToList} />
             ) : (
-              <AddFromVideo embedded onSaved={handleAiSaved} isOffline={isOffline} />
+              <AddFromVideo
+                embedded
+                onSaved={handleAiSaved}
+                isOffline={isOffline}
+                recipes={recipes}
+                onOpenExisting={openDetail}
+              />
             )}
           </div>
         )}
@@ -387,6 +393,8 @@ export default function App() {
           <AddFromVideo
             onSaved={handleAiSaved}
             isOffline={isOffline}
+            recipes={recipes}
+            onOpenExisting={openDetail}
           />
         )}
 
