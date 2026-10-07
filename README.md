@@ -12,6 +12,10 @@ moment that step happens.
 It's an installable PWA built for one person. It runs on a home Mac, and my phone reaches it over
 Tailscale.
 
+![The recipe library](docs/images/library.png)
+
+![Cooking Mode: the current step on the left, the source video on the right](docs/images/cooking-mode.png)
+
 ## Quick start
 
 You need **Node 20+**, **yt-dlp**, and **ffmpeg**, plus a free
