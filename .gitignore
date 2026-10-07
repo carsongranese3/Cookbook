@@ -23,3 +23,6 @@ dist/
 
 # recipe video media (Cook Mode) — never enters git
 /server/media/
+
+# local handoff notes (internal, not part of the app)
+/context.md
