@@ -232,7 +232,7 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
 ## 2026-09-02 — Port 3001 is the always-on address; dist rebuilds itself
 - **:3001 is the real address for both Mac and phone.** `com.cookbook.server` already served the
   API plus `client/dist` there; the phone reaches it over Tailscale at
-  `carsons-macbook-air.tailcbc03a.ts.net:3001` (or `100.119.245.13:3001`). The Vite dev server on
+  `<machine>.<tailnet>.ts.net:3001` (or its `100.x` Tailscale IP). The Vite dev server on
   :5173 stays localhost-only and is for development only — it is deliberately **not** exposed with
   `--host`, so there is exactly one URL to remember per device.
 - **New LaunchAgent `com.cookbook.build`** (`deploy/com.cookbook.build.plist`) runs

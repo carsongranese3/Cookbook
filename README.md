@@ -1,86 +1,116 @@
-# Cookbook ("Pantry")
+# Cookbook
 
-A personal recipe app for computer + phone, built as an installable PWA. Save, search, and
-favorite recipes; plan meals for the week; keep a shopping list; cook hands-free in a full-screen
-step-by-step Cooking Mode; and turn an **Instagram Reel / TikTok** cooking video into a structured,
-editable recipe using a free AI (Google Gemini). All measurements are imperial.
+A personal recipe app that turns Instagram Reels and TikTok cooking videos into structured,
+editable recipes. Paste a link (or upload the video), and Google Gemini watches it and returns a
+recipe with ingredients, steps, timings, and a cover frame, converted to imperial units.
 
-See [`plan.md`](./plan.md) for background, [`specs/pantry.md`](./specs/pantry.md) for the full spec,
-and [`docs/`](./docs) for the API contract, data shapes, design mapping, and decisions log.
+Around that sits the rest of a kitchen: a searchable recipe library, a monthly meal plan, a
+shopping list with price estimates, a pantry you can stock by photographing a receipt, a cooking
+log, and a full-screen Cooking Mode that plays the source video beside each step and jumps to the
+moment that step happens.
 
-## Structure
-- `server/` — Node + Express API on SQLite (`better-sqlite3`). Holds the Gemini key, runs yt-dlp.
-  - `server/extract/` — the video→recipe extraction layer (yt-dlp + Gemini Files API).
-- `client/` — React (Vite) PWA frontend, plain CSS.
+It's an installable PWA built for one person. It runs on a home Mac, and my phone reaches it over
+Tailscale.
 
-## Setup
+## Quick start
 
-**1. Backend env** — copy the example and add your key:
+You need **Node 20+**, **yt-dlp**, and **ffmpeg**, plus a free
+[Gemini API key](https://aistudio.google.com/apikey).
+
 ```bash
-cd server
-cp .env.example .env
-# then edit .env and set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)
+brew install yt-dlp ffmpeg          # Linux: pip install yt-dlp, and ffmpeg from your package manager
+
+git clone https://github.com/carsongranese3/Cookbook.git
+cd Cookbook
+
+cp server/.env.example server/.env  # then set GEMINI_API_KEY in server/.env
+
+cd server && npm install && npm run dev     # API on http://localhost:3001
+cd client && npm install && npm run dev     # app on http://localhost:5173 (second terminal)
 ```
 
-**2. Install yt-dlp** (needed for Instagram/TikTok link import):
-```bash
-brew install yt-dlp        # macOS
-# pip install yt-dlp       # Linux
-```
-Instagram Reels sometimes need a logged-in cookies file — if links fail, export one and set
-`YTDLP_COOKIES=/absolute/path/cookies.txt` in `server/.env`. Uploading a video file always works
-without yt-dlp.
+Open http://localhost:5173. The Vite dev server proxies `/api/*` to the API.
 
-**3. Install deps and run (two terminals):**
-```bash
-# terminal 1 — API on http://localhost:3001
-cd server && npm install && npm run dev
+For everyday use, build the client once (`cd client && npm run build`) and use
+http://localhost:3001 instead. The API serves `client/dist` itself, so one process serves
+everything.
 
-# terminal 2 — app on http://localhost:5173
-cd client && npm install && npm run dev
-```
+### Configuration (`server/.env`)
 
-Open http://localhost:5173. The Vite dev server proxies `/api/*` to the backend.
-
-**Use it from your phone:** on the same network, `cd client && npm run dev -- --host` and open
-`http://<your-computer-ip>:5173`. For access anywhere, put the app behind a private
-[Tailscale](https://tailscale.com) tunnel (see `docs/decisions.md` for the hosting plan).
-
-## Where to open it (this machine)
-
-Two LaunchAgents in [`deploy/`](./deploy) keep port 3001 always on and always current, so these
-URLs work without starting anything:
-
-| Where | URL | Serves |
+| Variable | Required | What it does |
 | --- | --- | --- |
-| Mac — everyday use | http://localhost:3001 | built app + API (`com.cookbook.server`) |
-| Mac — while developing | http://localhost:5173 | Vite dev server, hot reload (`npm run dev`) |
-| Phone (Tailscale) | http://carsons-macbook-air.tailcbc03a.ts.net:3001 | same as :3001 |
-| Phone (Tailscale, by IP) | http://100.119.245.13:3001 | same as :3001 |
+| `GEMINI_API_KEY` | yes | Gemini key for video import, receipt scanning, and price estimates. Server-side only. |
+| `PORT` | no | API port. Default `3001`. |
+| `YTDLP_COOKIES` | for Instagram | Absolute path to a Netscape-format cookies file from a logged-in browser. It must include the HttpOnly `sessionid` cookie. TikTok usually works without one. |
+| `GEMINI_MODEL` | no | Primary model. Default `gemini-3.1-flash-lite`. |
+| `GEMINI_MODELS` | no | Comma-separated list that replaces the whole fallback chain. |
+| `GEMINI_TIMEOUT_MS` | no | Per-call timeout. Default `120000`. |
 
-The dev server on :5173 is localhost-only, so the phone must use :3001.
+Link import is the fragile part. Uploading the video file always works and doesn't need yt-dlp.
 
-**Always-on services** — installed once with `cp deploy/*.plist ~/Library/LaunchAgents/` and
-`launchctl load` on each:
+## Engineering notes
 
-- `com.cookbook.server` — the API + built app on :3001. Managed from `server/`:
-  `npm run service:restart` / `service:stop` / `service:start` / `service:log`.
-- `com.cookbook.build` — `vite build --watch`, which rebuilds `client/dist` on every client
-  source change so :3001 (and therefore the phone) always serves the latest UI. Managed the same
-  way from `client/`, logs to `client/build.log`. It runs with `COOKBOOK_WATCH_BUILD=1`, which
-  turns off Vite's `emptyOutDir` so a rebuild never leaves :3001 without an `index.html`.
+**One Gemini call per import.** The video and its caption go to Gemini in a single request, and
+everything comes back from it: the recipe, metric-to-imperial conversion, category labels, and a
+timestamp for each step (which is what lets Cooking Mode seek the video). The cover photo is a frame
+grabbed locally with ffmpeg, not a second AI call. The only extra call is one retry when the model
+returns JSON that won't parse. This keeps a whole library inside the free tier.
 
-> **Restarting:** `npm run service:restart` (`launchctl kickstart -k`) picks up **code** changes
-> only. Editing a `.plist` — adding an env var, changing arguments — needs
-> `launchctl unload ~/Library/LaunchAgents/<label>.plist && launchctl load ~/Library/LaunchAgents/<label>.plist`,
-> because `kickstart` restarts the job from the already-loaded definition.
+**Free-tier model fallback.** Each free-tier Gemini model has its own daily quota. On a 429 or 503
+the server moves to the next model in the chain (`server/extract/gemini.js`) before giving up, so
+a busy model doesn't stop an import.
 
-Server-side edits are the one exception: `com.cookbook.server` runs plain `node index.js`, so
-after changing anything in `server/` run `cd server && npm run service:restart`.
+**Price precedence: manual → receipt → AI → unpriced.** Shopping-list prices come from three
+sources, and the first one that has a price wins. A price you typed is an explicit fact. A price
+from a scanned receipt is what you actually paid, scaled to the quantity on the list (1.87 lb for
+$8.41 means 1.5 lb shows $6.75). An AI estimate is a guess and is labeled as one. Receipts live in
+an append-only observation table, separate from the overwritable AI price cache, so a cache write
+can never overwrite real data. Items that already have a receipt price are left out of the Gemini
+batch entirely, so estimating gets cheaper the more you shop. Nothing calls Gemini until you press
+Estimate.
 
-> Note: if `npm install` errors with `EPERM` on a root-owned cache, run once:
-> `sudo chown -R $(id -u):$(id -g) ~/.npm`
+**Typed error codes.** Every failure in the extraction layer is an `ExtractError` with a
+machine-readable code and a user-facing message (`server/extract/errors.js`). yt-dlp's stderr is
+classified into specific causes (`COOKIES_EXPIRED`, `PRIVATE_POST`, `SOURCE_RATE_LIMITED`,
+`GEO_OR_IP_BLOCKED`, `NO_VIDEO_IN_POST`, …) instead of one "couldn't fetch" message, so the UI can
+tell you what to fix. Instagram rate-limiting the download (`SOURCE_RATE_LIMITED`) and Gemini's
+own quota (`RATE_LIMITED`) are deliberately separate codes.
 
-## Features
-Library (search + filters + favorites) · Recipe Detail · AI video import (upload or IG/TikTok link)
-· Meal Plan (week) · Shopping List · full-screen Cooking Mode · installable + offline-capable PWA.
+**Single-user over Tailscale, by design.** There is no login. The app runs on a home machine and
+is reachable only from devices on my private Tailscale network, so the network is the access
+control. Running downloads from a residential IP also makes yt-dlp far more reliable than a cloud
+server would be. If you expose this to the public internet, you're exposing an unauthenticated app
+that holds a Gemini key, so don't.
+
+## Running it always-on (macOS)
+
+[`deploy/`](./deploy) has two LaunchAgents: `com.cookbook.server` keeps the API and built app
+running on :3001, and `com.cookbook.build` runs `vite build --watch` so :3001 always serves the
+current UI. Install them with `cp deploy/*.plist ~/Library/LaunchAgents/` and `launchctl load` on
+each, after editing the paths inside to match your checkout.
+
+- After server changes: `cd server && npm run service:restart` (also `service:stop`,
+  `service:start`, `service:log`).
+- After editing a `.plist`: `launchctl unload` then `launchctl load` it. `service:restart` reuses
+  the already-loaded definition.
+- From a phone: install [Tailscale](https://tailscale.com) on both devices and open
+  `http://<your-machine>.<your-tailnet>.ts.net:3001`. The Vite dev server on :5173 is
+  localhost-only.
+
+## Repository layout
+
+- `server/`: Express API on SQLite (`better-sqlite3`). Holds the Gemini key and runs yt-dlp and
+  ffmpeg.
+  - `server/extract/`: the AI layer (video import, receipt scanning, price estimates).
+- `client/`: React + Vite PWA, plain hand-written CSS.
+- `docs/`: [API contract](./docs/api.md), [data shapes](./docs/data-shapes.md),
+  [design mapping](./docs/design.md), and the [decisions log](./docs/decisions.md), which records
+  why things are the way they are.
+- `specs/`: feature specs. `design/`: the original design prototype, code-named "Pantry".
+
+## Personal use
+
+This is a personal project. Downloading videos from Instagram or TikTok may violate their Terms of
+Service. Only import content you have the right to use, keep the results for your own cooking,
+and credit the creators. Every imported recipe keeps its source link and caption for that reason.
+Nothing here redistributes or republishes videos. They're stored locally on your own machine.
