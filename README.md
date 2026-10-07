@@ -12,9 +12,24 @@ moment that step happens.
 It's an installable PWA built for one person. It runs on a home Mac, and my phone reaches it over
 Tailscale.
 
+### The library
+
 ![The recipe library](docs/images/library.png)
 
+These recipes were imported from cooking videos. The cover photos are frames taken from the videos,
+which is why some still show the creator's title text. Each card shows total time and
+cuisine. You can search by title or ingredient, filter with the protein chips across the top or the
+fuller Filters panel, and heart a recipe to favorite it.
+
+### Cooking Mode
+
 ![Cooking Mode: the current step on the left, the source video on the right](docs/images/cooking-mode.png)
+
+Cooking Mode is a full-screen, one-step-at-a-time view. The current step is in large type you can
+read from across the kitchen, and the ingredient list with imperial amounts stays pinned underneath.
+When a recipe came from a video, the video plays alongside and jumps to the moment each step
+happens, using timestamps Gemini returned during import. The rewind button replays the current
+step's part of the video.
 
 ## Quick start
 
