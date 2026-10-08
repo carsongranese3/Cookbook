@@ -29,14 +29,14 @@ Both a **Desktop** and a **Phone** frame are drawn for every screen.
 5. **Shopping List** — eyebrow "N to buy", add-item input, "Clear checked". Item rows: checkbox, name (strikethrough when checked), qty. Empty state.
 6. **Cooking Mode** — full-screen dark overlay. Header (title + close), progress bar, "Step N of total" (terracotta), large centered step text, footer Back / dots / **Next**→**Finish**. Note: this design's Cook Mode is **step text only — no video pane**.
 
-## Data implied by the design (richer than plan.md's schema)
+## Data implied by the design (richer than original-build-plan.md's schema)
 - **Recipe:** title, description, cuisine, category, minutes (total time), servings, rating, favorite (bool), hero image, `ingredients: {name, qty}[]`, `steps: {n, text}[]`, source_url.
-  - Note: ingredients are **{name, qty} objects** here, vs. plan.md's array of plain strings.
+  - Note: ingredients are **{name, qty} objects** here, vs. original-build-plan.md's array of plain strings.
 - **Meal plan:** day → list of recipe references (this week).
 - **Shopping list:** items `{name, qty, checked}`.
 
-## Deltas vs. `plan.md` (to reconcile before building)
-- **New feature areas** not in plan.md: **Meal Plan** and **Shopping List** (+ favorites, ratings, cuisine, categories, hero images).
-- **Cooking Mode** is back, but as **text steps only** (plan.md had deferred a *video-beside-steps* cook mode).
-- **Video sources** include **YouTube**; plan.md had settled on **Instagram/TikTok only**.
+## Deltas vs. `original-build-plan.md` (to reconcile before building)
+- **New feature areas** not in original-build-plan.md: **Meal Plan** and **Shopping List** (+ favorites, ratings, cuisine, categories, hero images).
+- **Cooking Mode** is back, but as **text steps only** (original-build-plan.md had deferred a *video-beside-steps* cook mode).
+- **Video sources** include **YouTube**; original-build-plan.md had settled on **Instagram/TikTok only**.
 - **Ingredient shape** is `{name, qty}` objects, not plain strings — affects the DB schema and the AI extraction prompt.

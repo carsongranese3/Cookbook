@@ -127,6 +127,19 @@ each, after editing the paths inside to match your checkout.
   why things are the way they are.
 - `specs/`: feature specs. `design/`: the original design prototype, code-named "Pantry".
 
+## How this was built
+
+I designed the app and made the calls: Gemini's free tier for extraction, a home Mac on Tailscale
+instead of a hosted server with logins, one Gemini call per import, and the price-precedence rules.
+Those decisions are recorded with their reasoning in [`docs/decisions.md`](docs/decisions.md), and
+the plan the first version started from is in
+[`docs/original-build-plan.md`](docs/original-build-plan.md).
+
+The implementation was built with Claude Code, using a team of specialist agents (requirements,
+exploration, data, backend, frontend, QA and DevOps) coordinated through [`CLAUDE.md`](CLAUDE.md).
+The look started as a prototype in Claude Design, saved in `design/`, and was rebuilt in the app's
+own hand-written CSS.
+
 ## Personal use
 
 This is a personal project. Downloading videos from Instagram or TikTok may violate their Terms of

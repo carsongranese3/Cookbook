@@ -12,7 +12,7 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
 
 ## 2026-07-08 — Design import ("Pantry") and scope reconciliation
 - Imported the claude.ai/design prototype "Recipe tracking with AI video" → `design/Pantry.dc.html`,
-  mapped in `docs/design.md`. **The design supersedes `plan.md` where they differ.**
+  mapped in `docs/design.md`. **The design supersedes `original-build-plan.md` where they differ.**
 - **Scope:** build the **full app** — all 6 screens: Library, Recipe Detail, AI Video Import,
   Meal Plan, Shopping List, Cooking Mode.
 - **Video sources:** **Instagram + TikTok only.** The design copy also mentions YouTube; we are
@@ -20,7 +20,7 @@ Cross-cutting choices for Cookbook. Newest at the bottom.
   drop YouTube.
 - **Cooking Mode:** build the design's **text-only** full-screen step mode (no video pane). The
   earlier idea of a video-beside-steps cook mode is not part of this build.
-- **Data model expanded** beyond `plan.md` to match the design: recipes gain `description`,
+- **Data model expanded** beyond `original-build-plan.md` to match the design: recipes gain `description`,
   `cuisine`, `category`, `minutes`, `servings`, `rating`, `favorite`, `image`; `ingredients`
   become `{name, qty}` objects (not plain strings). New stores: meal plan and shopping list.
 - The Phase-1 scaffold (`server/` + `client/`, manual recipe CRUD) is the starting point and will

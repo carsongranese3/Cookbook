@@ -1,4 +1,10 @@
-# Cookbook — Recipe App (Build Plan)
+# Cookbook — Original Build Plan
+
+> **Historical document.** This is the plan the first version was built from, kept for reference.
+> It is out of date: Cooking Mode, the meal plan, shopping list, pantry, and cooking log have all
+> since been built, and the recipe data model has changed. For the current state, see the
+> [README](../README.md), [`api.md`](./api.md), [`data-shapes.md`](./data-shapes.md), and the
+> [decisions log](./decisions.md).
 
 A personal recipe app for **computer + phone**: save/edit recipes, and turn a cooking
 video into a structured recipe using a **free AI (Google Gemini)**. Videos come from

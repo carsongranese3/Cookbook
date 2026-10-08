@@ -3,7 +3,7 @@
 Status: greenfield build with an imported design prototype and a Phase-1 scaffold to extend.
 Sources of truth this spec derives from and must not contradict: `CLAUDE.md`, `docs/design.md`,
 `design/Pantry.dc.html` (visual reference only, not runnable), `docs/decisions.md`. Where
-`plan.md` differs from the design or decisions, the design and decisions win.
+`docs/original-build-plan.md` differs from the design or decisions, the design and decisions win.
 
 This spec feeds `data-agent` (writes `docs/data-shapes.md`), `backend-agent` (writes
 `docs/api.md`), and `frontend-agent`, each of which starts from fresh context. Field names
@@ -29,7 +29,7 @@ This is not a from-scratch build. A Phase-1 scaffold exists and must be **extend
 not thrown away or re-specified wholesale.
 
 Current behavior (as built):
-- `server/db.js` — one `recipes` table. Schema is the **old `plan.md` shape**: `id, title,
+- `server/db.js` — one `recipes` table. Schema is the **old `docs/original-build-plan.md` shape**: `id, title,
   servings (TEXT), ingredients (JSON string[]), steps (JSON string[]), notes, source_url,
   source_caption, created_at, updated_at`.
 - `server/index.js` — REST CRUD for recipes only: `GET /api/health`, `GET /api/recipes`,
@@ -578,7 +578,7 @@ Cross-cutting:
 - **Video-beside-steps Cooking Mode** — Cooking Mode is text-only.
 - **Cloud sync / multi-user / accounts / in-app auth** — single user behind Tailscale.
 - **Automated test suite** — verification is manual QA against this spec.
-- **Web Share Target** (share a Reel into the app) — noted in plan.md as a nice-to-have; not part
+- **Web Share Target** (share a Reel into the app) — noted in docs/original-build-plan.md as a nice-to-have; not part
   of this build.
 
 ---
